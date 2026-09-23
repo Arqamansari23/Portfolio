@@ -52,5 +52,5 @@ adapt to the page's colour palette, and remain selectable text.
 ## Contact
 
 - Email: Ibneshakeel34@gmail.com
-- LinkedIn: https://www.linkedin.com/in/arqamansari-26ba8a269/
+- LinkedIn: https://www.linkedin.com/in/arqam-ansari-26ba8a269
 - GitHub: https://github.com/Arqamansari23
