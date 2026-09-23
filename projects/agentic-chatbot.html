@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agentic Website Chatbot — Architecture Deep Dive | Arqam Ahmed Ansari</title>
+<meta name="description" content="How I built a production ReAct agent for an enterprise website: LangGraph orchestration, 18 specialized tools, STM + LTM memory, guardrails and LangSmith observability.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/case.css">
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<nav class="doc-nav">
+  <div class="wrap">
+    <a class="back-link" href="../index.html#works">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Back to Portfolio
+    </a>
+    <div class="nav-actions">
+      <span class="nav-tag">Case Study</span>
+      <button class="toc-toggle" type="button" id="tocToggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Contents
+      </button>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-hero">
+  <div class="wrap">
+    <div class="kicker-row">
+      <span class="kicker k-purple">Agentic AI</span>
+      <span class="kicker k-green">In Production</span>
+      <span class="kicker k-blue">LangGraph · ReAct</span>
+    </div>
+    <h1>Agentic Website Chatbot: A ReAct Agent That Answers, Qualifies and Converts</h1>
+    <p class="standfirst">A customer-facing chatbot for an enterprise software company's website — built as a ReAct agent on LangGraph, with 18 specialized tools instead of one bloated system prompt, two tiers of memory, tool-based guardrails, and full execution tracing so every answer can be debugged.</p>
+
+    <div class="hero-meta">
+      <div><span>My Role</span><b>AI Engineer — end-to-end</b></div>
+      <div><span>Core Stack</span><b>LangGraph · LangChain · GPT-4o · PostgreSQL · LangSmith</b></div>
+      <div><span>Deployment</span><b>Dockerized, on-premises</b></div>
+    </div>
+
+    <div class="stat-strip">
+      <div class="stat-box"><b>18</b><span>Specialized tools in the ReAct loop</span></div>
+      <div class="stat-box"><b>2 Tiers</b><span>Short-term + long-term memory</span></div>
+      <div class="stat-box"><b>&gt;90%</b><span>Tool-routing target before go-live</span></div>
+      <div class="stat-box"><b>100%</b><span>Conversations traced &amp; logged</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="doc-body">
+
+  <aside class="toc" id="toc">
+    <h5>On this page</h5>
+    <a href="#problem" class="active">The problem</a>
+    <a href="#architecture">1 · Why ReAct</a>
+    <a href="#tools">2 · Specialized tools</a>
+    <a href="#memory">3 · Memory system</a>
+    <a href="#guardrails">4 · Guardrails</a>
+    <a href="#observability">5 · Testing &amp; observability</a>
+    <a href="#outcomes">6 · What it delivers</a>
+  </aside>
+
+  <article>
+
+    <!-- ================= PROBLEM ================= -->
+    <section id="problem">
+      <div class="sec-num">The Problem</div>
+      <h2>A website visitor has a question. Sales needs a lead.</h2>
+      <p class="lead">A corporate website answers the same questions all day: what do you build, what does it cost, which industries have you worked in, can I talk to someone. Those conversations are valuable — but only if they end in a qualified lead that reaches the sales team with its full context.</p>
+      <p>The goal was a chatbot that behaves like an informed team member rather than an FAQ widget: it understands follow-up questions, routes each query to the right body of knowledge, refuses to answer things outside its remit, and turns genuine interest into a CRM record that sales can act on — with the entire conversation attached.</p>
+      <div class="callout c-blue">
+        <b>Design constraint</b>
+        Everything had to be debuggable. An agent that occasionally gives a wrong answer with no way to find out why is not something you can put in front of customers.
+      </div>
+    </section>
+
+    <!-- ================= ARCHITECTURE ================= -->
+    <section id="architecture">
+      <div class="sec-num">01 · Architecture</div>
+      <h2>Choosing the agentic pattern: why ReAct</h2>
+      <p>Several agentic patterns were on the table. For a customer-facing bot that has to answer diverse questions, collect leads, route to the right information and survive mid-conversation changes of direction, I chose <strong>ReAct (Reasoning + Acting)</strong>.</p>
+
+      <h3>What ReAct actually does</h3>
+      <p>ReAct interleaves reasoning with action in a loop. Instead of running a fixed pipeline, the model reasons about what to do next, calls a tool, observes the result, and reasons again until it can answer:</p>
+      <div class="callout c-orange">
+        <b>Thought → Act → Observe → Thought → Act → Observe → … → Final Answer</b>
+        The agent decides which tools to invoke from user intent, conversation history and previous tool output — not from a hardcoded route.
+      </div>
+
+      <h3>What I ruled out, and why</h3>
+      <div class="compare">
+        <div class="row">
+          <h4>Single-prompt chaining <span class="badge-x">Rejected</span></h4>
+          <p>One LLM call carrying every service description, price and portfolio link. Context bloat, high token cost per turn, and no structured way to take an action.</p>
+        </div>
+        <div class="row">
+          <h4>Plan-and-execute <span class="badge-x">Rejected</span></h4>
+          <p>Plans all steps upfront, then executes. Brittle in conversation, where the visitor changes direction halfway through.</p>
+        </div>
+        <div class="row">
+          <h4>Static tool routing <span class="badge-x">Rejected</span></h4>
+          <p>Hardcoded rules mapping queries to handlers. Fails on ambiguous phrasing and cannot follow up naturally.</p>
+        </div>
+        <div class="row">
+          <h4>Multi-agent coordination <span class="badge-x">Rejected</span></h4>
+          <p>Several specialized agents negotiating with each other. Genuine overkill for a single-domain bot, and much harder to debug and maintain.</p>
+        </div>
+        <div class="row picked">
+          <h4>ReAct single agent <span class="badge-ok">Chosen</span></h4>
+          <p>One coherent reasoning loop with full agency over a toolbox. Handles ambiguity and follow-ups, keeps each tool small and testable, and produces a readable trace of every decision.</p>
+        </div>
+      </div>
+
+      <h3>The LLM as a query router</h3>
+      <p>The model sits at the centre as an orchestrator. Every message arrives with the conversation history and the full tool list, and the model reads intent, picks the domain expert that can answer, calls it with parameters, observes the output and composes the reply. It is not just generating text — it is <strong>dispatching to specialized handlers</strong>, which is what keeps hallucination down and business logic testable.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 470" role="img" aria-label="ReAct flow: a visitor message reaches the orchestrator, which loops through reason, act and observe until the answer is complete, then replies">
+            <defs>
+              <marker id="ar" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar)">
+              <path d="M440 46v22"/>
+              <path d="M440 118v20"/>
+              <path d="M440 194v20"/>
+              <path d="M440 268v20"/>
+              <path d="M440 342v18"/>
+              <path d="M556 406h72"/>
+            </g>
+
+            <rect x="362" y="16" width="156" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="35" text-anchor="middle">Visitor message</text>
+
+            <rect x="316" y="68" width="248" height="50" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="89" text-anchor="middle">LLM Orchestrator · GPT-4o</text>
+            <text class="dg-label" x="440" y="106" text-anchor="middle" opacity="0.7">reads intent · routes the query</text>
+
+            <rect x="320" y="138" width="240" height="56" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="440" y="160" text-anchor="middle" fill="#0C6B42">REASON — Thought</text>
+            <text class="dg-small" x="440" y="178" text-anchor="middle" fill="#16A365">analyse intent · plan the next action</text>
+
+            <rect x="320" y="214" width="240" height="54" rx="12" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="440" y="236" text-anchor="middle" fill="#9A5A17">ACT — Tool call</text>
+            <text class="dg-small" x="440" y="254" text-anchor="middle" fill="#F2994A">invoke the selected domain tool</text>
+
+            <rect x="320" y="288" width="240" height="54" rx="12" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="440" y="310" text-anchor="middle" fill="#1A4C9E">OBSERVE — Tool output</text>
+            <text class="dg-small" x="440" y="328" text-anchor="middle" fill="#2F7BF6">process what the tool returned</text>
+
+            <path d="M440 360l116 46-116 46-116-46z" fill="#6B7180"/>
+            <text class="dg-label" x="440" y="403" text-anchor="middle">Answer complete?</text>
+            <text class="dg-label" x="440" y="418" text-anchor="middle" opacity="0.75">enough to reply?</text>
+
+            <path d="M324 406H150V166h164" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar)"/>
+            <text class="dg-edge" x="150" y="290" text-anchor="middle">No — loop again</text>
+            <text class="dg-edge" x="594" y="396" text-anchor="middle">Yes</text>
+
+            <rect x="628" y="390" width="196" height="32" rx="9" fill="#7C5CFC"/>
+            <text class="dg-label" x="726" y="410" text-anchor="middle">Final response → visitor</text>
+
+            <g class="dg-edge">
+              <text x="606" y="170">step 1</text>
+              <text x="606" y="244">step 2</text>
+              <text x="606" y="318">step 3</text>
+            </g>
+          </svg>
+        </div>
+        <figcaption>Each pass of the Reason → Act → Observe loop lets the agent adjust its plan from the last tool result, which is what makes it resilient to multi-part questions.</figcaption>
+      </figure>
+
+      <h3>Agent initialization</h3>
+      <p>LangGraph's prebuilt ReAct constructor wraps the model with all registered tools and a checkpointer that persists conversation state per session thread. Temperature is pinned to zero — routing decisions should be deterministic, not creative.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> agent.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── ReAct agent initialization ───────────────────────────────────────
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+from langgraph.checkpoint.memory import MemorySaver
+
+# Short-term memory: conversation state, keyed per session thread
+checkpointer = MemorySaver()
+
+llm = ChatOpenAI(
+    model='gpt-4o',
+    temperature=0.0,      # deterministic routing, no invented detail
+    max_tokens=500
+)
+
+# Every tool is a focused domain expert with its own knowledge
+tools = [
+    handle_greeting,              # small talk
+    services_info,                # knowledge: service catalogue
+    company_portfolio,            # knowledge: work by domain
+    industries_served,            # knowledge: verticals
+    pricing_info,                 # knowledge: engagement models
+    contact_info,                 # knowledge: how to reach us
+    awards, about_company,        # knowledge: company background
+    founders_and_teams,           # knowledge: who you'd work with
+    client_reviews,               # knowledge: ratings and reviews
+    podcasts_and_blogs,           # knowledge: published content
+    job_opportunities,            # knowledge: careers enquiries
+    business_recommendations,     # maps an industry to services
+    show_lead_form,               # action: capture a project lead
+    show_consultation_form,       # action: book a consultation
+    show_sales_form,              # action: connect to sales
+    show_issue_form,              # action: report a site issue
+    handle_irrelevant_queries,    # guardrail: out-of-scope filter
+]
+
+agent_executor = create_react_agent(
+    model=llm,
+    tools=tools,
+    checkpointer=checkpointer,    # enables memory across turns
+    state_modifier=system_prompt  # business context + routing rules
+)
+
+# One isolated thread per visitor session
+config = {'configurable': {'thread_id': thread_id}}
+response = agent_executor.invoke(
+    {'messages': [HumanMessage(content=user_input)]},
+    config=config
+)</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= TOOLS ================= -->
+    <section id="tools">
+      <div class="sec-num">02 · Tools</div>
+      <h2>18 small experts instead of one enormous prompt</h2>
+      <p>The most common mistake in LLM chatbots is loading everything into a single system prompt — every service description, price table, portfolio link and form rule in one context window. That fails in two ways at once:</p>
+
+      <div class="callout c-orange">
+        <b>Context rot &amp; context bloat</b>
+        As context grows, attention degrades on its earlier parts and instructions get quietly "forgotten" in long conversations. Meanwhile every single turn pays for tokens it does not need.
+      </div>
+
+      <p>The fix is specialization. Each tool is a compact domain expert with its own prompt template and curated knowledge, and the agent loads only what the current question needs. That buys five things:</p>
+      <ul class="checks">
+        <li><strong>Lower token cost</strong> — only the relevant tool's knowledge is processed per query</li>
+        <li><strong>Higher accuracy</strong> — each tool is tuned for one domain, with no dilution</li>
+        <li><strong>Easier maintenance</strong> — update one tool's knowledge without touching the agent</li>
+        <li><strong>Real testability</strong> — each tool can be unit-tested in isolation</li>
+        <li><strong>Cleaner guardrails</strong> — out-of-scope queries get their own dedicated handler</li>
+      </ul>
+
+      <h3>A · Knowledge tools</h3>
+      <p>These combine curated company data with generation, so answers stay grounded but still read conversationally.</p>
+      <div class="tool-grid">
+        <div class="tool t-knowledge"><b>services_info</b><p>The full service catalogue — web, mobile, AI, DevOps, cybersecurity, QA — answered against a curated data string.</p></div>
+        <div class="tool t-knowledge"><b>company_portfolio</b><p>Validates that a service or industry is actually offered, then returns the matching portfolio link.</p></div>
+        <div class="tool t-knowledge"><b>industries_served</b><p>Deep dives per vertical — healthcare, fintech, logistics, education, hospitality — plus links for the rest.</p></div>
+        <div class="tool t-knowledge"><b>pricing_info</b><p>Engagement models and estimates, including objection handling for price-sensitive visitors.</p></div>
+        <div class="tool t-knowledge"><b>contact_info</b><p>Office and contact details, with a strict policy on what may and may not be shared.</p></div>
+        <div class="tool t-knowledge"><b>business_recommendations</b><p>Maps a visitor's stated industry to the most relevant services: "I'm in healthcare — how can you help?"</p></div>
+      </div>
+
+      <h3>B · Action tools — where conversation becomes pipeline</h3>
+      <p>Action tools return a signal string rather than prose. The backend intercepts that signal and renders an interactive form; the submission is written straight into the CRM tables.</p>
+      <div class="tool-grid">
+        <div class="tool t-action"><b>show_lead_form</b><p>Visitor wants to start a project. Validates that the request is software-related, then opens lead capture → <code class="inline">leads</code>.</p></div>
+        <div class="tool t-action"><b>show_consultation_form</b><p>Books a consultation with session id, name, email and type → <code class="inline">consultations</code>.</p></div>
+        <div class="tool t-action"><b>show_sales_form</b><p>Connects the visitor to sales with their reason for getting in touch → <code class="inline">sales</code>.</p></div>
+        <div class="tool t-action"><b>show_issue_form</b><p>Captures website problems with a description → <code class="inline">issues</code>.</p></div>
+      </div>
+
+      <div class="callout c-blue">
+        <b>Conversation-to-lead tracing</b>
+        Every submission carries the visitor's session id, and a conversation tracker writes each message, response, button click and form submit to the history table. Sales doesn't just get an email address — they get the entire conversation that led to it.
+      </div>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 892 560" role="img" aria-label="Tool connection map: the orchestrator dispatches a knowledge query, an action trigger or an out-of-scope query; action tools write to CRM tables; all tool output returns to the loop before the final answer">
+            <defs>
+              <marker id="ar2" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="ar2s" markerWidth="8" markerHeight="8" refX="6.8" refY="2.8" orient="auto"><path d="M0 0l6 2.8-6 2.8z" fill="#B4BAC6"/></marker>
+            </defs>
+
+            <rect x="352" y="12" width="150" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="427" y="31" text-anchor="middle">Visitor message</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar2)">
+              <path d="M427 42v22"/>
+              <path d="M427 114c0 24-252 18-252 44"/>
+              <path d="M427 114v44"/>
+              <path d="M427 114c0 24 306 18 306 44"/>
+            </g>
+
+            <rect x="317" y="64" width="220" height="50" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="427" y="85" text-anchor="middle">ReAct Orchestrator · GPT-4o</text>
+            <text class="dg-label" x="427" y="102" text-anchor="middle" opacity="0.7">classify intent → select tool</text>
+
+            <g>
+              <rect x="176" y="128" width="104" height="17" rx="8" fill="#fff"/>
+              <text class="dg-edge" x="228" y="140" text-anchor="middle">knowledge query</text>
+              <rect x="436" y="128" width="88" height="17" rx="8" fill="#fff"/>
+              <text class="dg-edge" x="480" y="140" text-anchor="middle">action trigger</text>
+              <rect x="608" y="128" width="88" height="17" rx="8" fill="#fff"/>
+              <text class="dg-edge" x="652" y="140" text-anchor="middle">out of scope</text>
+            </g>
+
+            <!-- knowledge tools -->
+            <rect x="14" y="158" width="322" height="170" rx="14" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="175" y="180" text-anchor="middle" fill="#1A4C9E">Knowledge base tools</text>
+            <g class="dg-mono" fill="#1F2937">
+              <rect x="26" y="190" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="99" y="206" text-anchor="middle">services_info</text>
+              <rect x="180" y="190" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="253" y="206" text-anchor="middle">company_portfolio</text>
+              <rect x="26" y="220" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="99" y="236" text-anchor="middle">industries_served</text>
+              <rect x="180" y="220" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="253" y="236" text-anchor="middle">pricing_info</text>
+              <rect x="26" y="250" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="99" y="266" text-anchor="middle">contact_info</text>
+              <rect x="180" y="250" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="253" y="266" text-anchor="middle">about · awards</text>
+              <rect x="26" y="280" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="99" y="296" text-anchor="middle">reviews · blogs</text>
+              <rect x="180" y="280" width="146" height="24" rx="7" fill="#fff" stroke="#D6E7FF"/><text x="253" y="296" text-anchor="middle">business_recs</text>
+            </g>
+            <text class="dg-small" x="175" y="318" text-anchor="middle" fill="#2F7BF6">curated knowledge + its own prompt template</text>
+
+            <!-- action tools -->
+            <rect x="348" y="158" width="266" height="170" rx="14" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="481" y="180" text-anchor="middle" fill="#9A5A17">Action tools → CRM</text>
+            <g stroke="#B4BAC6" stroke-width="1.2" fill="none" marker-end="url(#ar2s)">
+              <path d="M492 202h22"/><path d="M492 232h22"/><path d="M492 262h22"/><path d="M492 292h22"/>
+            </g>
+            <g class="dg-mono" fill="#1F2937">
+              <rect x="358" y="190" width="134" height="24" rx="7" fill="#fff" stroke="#FFE0C2"/><text x="425" y="206" text-anchor="middle">show_lead_form</text>
+              <rect x="358" y="220" width="134" height="24" rx="7" fill="#fff" stroke="#FFE0C2"/><text x="425" y="236" text-anchor="middle">show_consult_form</text>
+              <rect x="358" y="250" width="134" height="24" rx="7" fill="#fff" stroke="#FFE0C2"/><text x="425" y="266" text-anchor="middle">show_sales_form</text>
+              <rect x="358" y="280" width="134" height="24" rx="7" fill="#fff" stroke="#FFE0C2"/><text x="425" y="296" text-anchor="middle">show_issue_form</text>
+            </g>
+            <g class="dg-mono" fill="#fff">
+              <rect x="516" y="190" width="88" height="24" rx="7" fill="#F2994A"/><text x="560" y="206" text-anchor="middle">leads</text>
+              <rect x="516" y="220" width="88" height="24" rx="7" fill="#F2994A"/><text x="560" y="236" text-anchor="middle">consultations</text>
+              <rect x="516" y="250" width="88" height="24" rx="7" fill="#F2994A"/><text x="560" y="266" text-anchor="middle">sales</text>
+              <rect x="516" y="280" width="88" height="24" rx="7" fill="#F2994A"/><text x="560" y="296" text-anchor="middle">issues</text>
+            </g>
+            <text class="dg-small" x="481" y="318" text-anchor="middle" fill="#D9772B">form signal → PostgreSQL row + session_id</text>
+
+            <!-- guardrail -->
+            <rect x="626" y="158" width="240" height="170" rx="14" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="746" y="180" text-anchor="middle" fill="#A63A3A">Guardrail tool</text>
+            <rect x="636" y="190" width="220" height="24" rx="7" fill="#fff" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="746" y="206" text-anchor="middle" fill="#1F2937">handle_irrelevant_queries</text>
+            <g class="dg-small" fill="#8A5252">
+              <text x="646" y="238">· general knowledge, tutorials</text>
+              <text x="646" y="258">· hardware &amp; device problems</text>
+              <text x="646" y="278">· non-software build requests</text>
+              <text x="646" y="298">· personal advice, entertainment</text>
+            </g>
+            <text class="dg-small" x="746" y="318" text-anchor="middle" fill="#E05252">acknowledge → state scope → redirect</text>
+
+            <!-- observation -->
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M175 328v26h252"/>
+              <path d="M481 328v26"/>
+              <path d="M746 328v26H427"/>
+              <path d="M427 354v20" marker-end="url(#ar2)"/>
+            </g>
+            <rect x="277" y="374" width="300" height="38" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="427" y="398" text-anchor="middle" fill="#0C6B42">Tool output → Observation</text>
+
+            <path d="M427 412v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar2)"/>
+            <path d="M427 430l104 40-104 40-104-40z" fill="#6B7180"/>
+            <text class="dg-label" x="427" y="474" text-anchor="middle">More reasoning needed?</text>
+
+            <path d="M531 470h341V96H541" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar2)"/>
+            <rect x="858" y="352" width="28" height="17" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="872" y="364" text-anchor="middle">yes</text>
+
+            <path d="M323 470H120v38h130" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar2)"/>
+            <text class="dg-edge" x="196" y="462" text-anchor="middle">no</text>
+            <rect x="254" y="492" width="240" height="32" rx="9" fill="#7C5CFC"/>
+            <text class="dg-label" x="374" y="512" text-anchor="middle">Final response → visitor</text>
+          </svg>
+        </div>
+        <figcaption>One loop, three classes of tool. Knowledge tools answer, action tools write a CRM row tied to the session, and the guardrail declines gracefully — every result re-enters the loop before the agent replies.</figcaption>
+      </figure>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> tools.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Knowledge tool: curated data + generation ────────────────────────
+@tool
+def services_info(user_message: str = '') -> str:
+    '''Service enquiries: web, mobile, AI, DevOps, cybersecurity.'''
+    services_data = '''
+    1. Web Development   — custom websites and web apps
+    2. Mobile            — iOS, Android, cross-platform
+    3. AI Integration    — ML, chatbots, NLP, computer vision
+    4. Cybersecurity     — audits, penetration testing, compliance
+    5. DevOps            — CI/CD, containers, infrastructure
+    ... (full catalogue with descriptions)
+    '''
+    prompt = PromptTemplate(
+        template='You are the website assistant... {services_data} ... {user_message}',
+        input_variables=['user_message', 'services_data']
+    )
+    return (prompt | llm).invoke({
+        'user_message': user_message,
+        'services_data': services_data
+    }).content
+
+
+# ── Action tool: returns a signal, not prose ─────────────────────────
+@tool
+def show_lead_form() -> str:
+    '''Visitor wants to start a software project. Validates the request
+    is tech-related, then asks the frontend to render the lead form.'''
+    return 'SHOW_LEAD_FORM'
+
+
+# ── Backend intercepts the signal and routes to a form ───────────────
+def process_user_message(user_input, session_id, thread_id):
+    response = agent_executor.invoke(
+        {'messages': [HumanMessage(content=user_input)]},
+        config={'configurable': {'thread_id': thread_id}}
+    )
+    for msg in reversed(response['messages'][-3:]):
+        if type(msg).__name__ == 'ToolMessage':
+            if 'SHOW_LEAD_FORM' in msg.content:
+                return {'show_form': 'lead', 'response': ''}
+            if 'SHOW_CONSULTATION_FORM' in msg.content:
+                return {'show_form': 'consultation', 'response': ''}
+    return {'show_form': None, 'response': agent_response}
+
+
+# ── Submission lands in the CRM, tied to the conversation ────────────
+@app.route('/submit_lead_form', methods=['POST'])
+def submit_lead_form():
+    cursor.execute('''
+        INSERT INTO leads (date, name, email, phone, status, session_id)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    ''', (datetime.now(), name, email, phone, 'New Lead', session_id))
+    ConversationTracker.track_form_submit(session_id, 'lead', form_data)
+    send_form_notification_async('lead', form_data)   # email alert</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= MEMORY ================= -->
+    <section id="memory">
+      <div class="sec-num">03 · Memory</div>
+      <h2>What separates an agent from a chatbot</h2>
+      <p class="lead">Without memory, every message is an isolated event. Ask about web development, then follow up with "what's the pricing for that?" — and "that" means nothing. The conversation breaks exactly where it was getting interesting.</p>
+      <p>The bot runs two complementary tiers, because they solve different problems:</p>
+
+      <h3>Short-term memory — the conversation</h3>
+      <p>Active history within one session, so the agent resolves follow-ups, pronouns and context switches. In LangGraph this is a checkpointer keyed by a unique <code class="inline">thread_id</code> per visitor. Invoke with the same thread id and the full history comes back automatically.</p>
+
+      <h3>Long-term memory — the business record</h3>
+      <p>Structured data that outlives the session: leads, consultations, sales contacts, issues and complete conversation histories, all in PostgreSQL, joined by session id.</p>
+
+      <div class="callout c-green">
+        <b>The combination is the point</b>
+        Short-term memory means the bot remembers you inside this conversation. Long-term memory means the sales team can read that whole conversation next week. Together they turn a chatbot into a lead generation engine.
+      </div>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 500" role="img" aria-label="Memory system: short-term memory holds per-thread conversation state, tool execution and the conversation tracker write leads, consultations, sales, issues and full history into PostgreSQL long-term memory">
+            <defs>
+              <marker id="ar3" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="ar3b" markerWidth="9" markerHeight="9" refX="1" refY="3.2" orient="auto"><path d="M7 0L0 3.2 7 6.4z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="365" y="12" width="150" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="31" text-anchor="middle">Visitor message</text>
+            <path d="M440 42v20" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar3)"/>
+
+            <rect x="330" y="62" width="220" height="50" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="83" text-anchor="middle">ReAct Agent · GPT-4o</text>
+            <text class="dg-label" x="440" y="100" text-anchor="middle" opacity="0.7">orchestrates every turn</text>
+
+            <!-- STM -->
+            <path d="M326 87H268" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar3)" marker-start="url(#ar3b)"/>
+            <rect x="266" y="64" width="62" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="297" y="76" text-anchor="middle">reads + writes</text>
+            <rect x="24" y="52" width="240" height="72" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="144" y="76" text-anchor="middle" fill="#5B3FD6">Short-term memory</text>
+            <text class="dg-small" x="144" y="94" text-anchor="middle" fill="#7C5CFC">MemorySaver checkpointer · in-session</text>
+            <text class="dg-small" x="144" y="110" text-anchor="middle" fill="#7C5CFC">isolated per thread_id</text>
+            <text class="dg-small" x="144" y="142" text-anchor="middle">follow-ups · pronouns · context switches</text>
+
+            <!-- tracker -->
+            <path d="M554 87h58" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar3)"/>
+            <rect x="616" y="52" width="240" height="72" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="736" y="76" text-anchor="middle" fill="#0C6B42">ConversationTracker</text>
+            <text class="dg-small" x="736" y="94" text-anchor="middle" fill="#16A365">every message · response · click</text>
+            <text class="dg-small" x="736" y="110" text-anchor="middle" fill="#16A365">and every form submission</text>
+
+            <!-- tool execution -->
+            <path d="M440 112v26" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar3)"/>
+            <rect x="330" y="138" width="220" height="42" rx="11" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="440" y="164" text-anchor="middle" fill="#9A5A17">Tool execution</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#ar3)">
+              <path d="M440 180c0 40-348 18-348 62"/>
+              <path d="M440 180c0 40-174 22-174 62"/>
+              <path d="M440 180v62"/>
+              <path d="M440 180c0 40 174 22 174 62"/>
+              <path d="M736 124c0 60 52 58 52 118"/>
+            </g>
+
+            <g class="dg-edge" text-anchor="middle">
+              <text x="150" y="234">form submitted</text>
+              <text x="300" y="234">consultation</text>
+              <text x="474" y="234">sales contact</text>
+              <text x="648" y="234">issue reported</text>
+              <text x="788" y="234">every interaction</text>
+            </g>
+
+            <g class="dg-mono" fill="#fff" text-anchor="middle">
+              <rect x="22" y="242" width="140" height="38" rx="10" fill="#2F7BF6" opacity="0.92"/><text x="92" y="266">leads</text>
+              <rect x="196" y="242" width="140" height="38" rx="10" fill="#2F7BF6" opacity="0.92"/><text x="266" y="266">consultations</text>
+              <rect x="370" y="242" width="140" height="38" rx="10" fill="#2F7BF6" opacity="0.92"/><text x="440" y="266">sales</text>
+              <rect x="544" y="242" width="140" height="38" rx="10" fill="#2F7BF6" opacity="0.92"/><text x="614" y="266">issues</text>
+              <rect x="718" y="242" width="140" height="38" rx="10" fill="#16A365" opacity="0.92"/><text x="788" y="266">conversation_history</text>
+            </g>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#ar3)">
+              <path d="M92 280v42"/>
+              <path d="M266 280v42"/>
+              <path d="M440 280v42"/>
+              <path d="M614 280v42"/>
+              <path d="M788 280v42"/>
+            </g>
+
+            <rect x="22" y="326" width="836" height="52" rx="14" fill="#10141F"/>
+            <text class="dg-label" x="440" y="350" text-anchor="middle">Long-term memory · PostgreSQL CRM</text>
+            <text class="dg-label" x="440" y="368" text-anchor="middle" opacity="0.7">persists across sessions · joined by session_id</text>
+
+            <rect x="180" y="404" width="240" height="52" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-small" x="300" y="426" text-anchor="middle" fill="#5B3FD6">SHORT-TERM buys</text>
+            <text class="dg-small" x="300" y="444" text-anchor="middle" fill="#7C5CFC">a conversation that makes sense</text>
+
+            <rect x="460" y="404" width="240" height="52" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-small" x="580" y="426" text-anchor="middle" fill="#0C6B42">LONG-TERM buys</text>
+            <text class="dg-small" x="580" y="444" text-anchor="middle" fill="#16A365">a lead sales can actually follow up</text>
+          </svg>
+        </div>
+        <figcaption>Session state lives in the checkpointer; anything of business value is written to PostgreSQL and joined back to the conversation by session id.</figcaption>
+      </figure>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> memory.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Short-term memory: per-session thread state ──────────────────────
+from langgraph.checkpoint.memory import MemorySaver
+
+checkpointer = MemorySaver()
+
+agent_executor = create_react_agent(
+    model=llm,
+    tools=tools,
+    checkpointer=checkpointer,     # history restored automatically
+    state_modifier=system_prompt
+)
+
+def get_or_create_thread_id(client_session_id):
+    return session_manager.get_or_create_session(client_session_id)
+
+# Same thread_id → LangGraph replays the full message history
+config = {'configurable': {'thread_id': thread_id}}
+
+
+# ── Long-term memory: durable audit trail ────────────────────────────
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS conversation_history (
+        id            SERIAL PRIMARY KEY,
+        session_id    VARCHAR(255) NOT NULL,
+        timestamp     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        message_type  VARCHAR(50) NOT NULL,   -- user, bot, click, submit
+        user_message  TEXT,
+        bot_response  TEXT,
+        button_clicked VARCHAR(255),
+        form_type     VARCHAR(50)
+    )
+''')
+
+class ConversationTracker:
+    @staticmethod
+    def track_user_message(session_id, user_message):
+        cursor.execute('''
+            INSERT INTO conversation_history
+                (session_id, timestamp, message_type, user_message)
+            VALUES (%s, %s, %s, %s)
+        ''', (session_id, datetime.now(), 'user_message', user_message))</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= GUARDRAILS ================= -->
+    <section id="guardrails">
+      <div class="sec-num">04 · Guardrails</div>
+      <h2>Defining what the bot should <em>not</em> answer</h2>
+      <p>Once the toolbox covers every business domain, a different problem appears: visitors ask about the weather, how to fix their phone, crypto prices, or how machine learning works. None of that belongs to a company website assistant — and left unguarded, the model will happily answer, off-brand and sometimes wrong.</p>
+
+      <div class="callout c-blue">
+        <b>A guardrail is a boundary, not a filter</b>
+        It defines what the assistant <strong>can</strong> do versus what it <strong>should not</strong> do, and makes sure both cases are handled gracefully.
+      </div>
+
+      <h3>Implemented as a tool, not a wrapper</h3>
+      <p>The guardrail is a tool — <code class="inline">handle_irrelevant_queries</code> — so it lives inside the same ReAct loop as everything else. The model classifies each query and routes out-of-scope ones to it. The system prompt makes that mandatory for general knowledge, unrelated tutorials, hardware problems, non-software services and personal advice.</p>
+      <p>The tool then produces a short, polite redirect that acknowledges the question, states the assistant's scope and offers a relevant next step — rather than a blunt refusal.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 900 570" role="img" aria-label="Guardrail flow: the orchestrator classifies each query; in-scope queries route to knowledge or action tools, out-of-scope queries go to the guardrail tool which picks one of three redirect patterns">
+            <defs>
+              <marker id="ar4" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="375" y="12" width="150" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="450" y="31" text-anchor="middle">User query · any message</text>
+            <path d="M450 42v20" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar4)"/>
+
+            <rect x="340" y="62" width="220" height="48" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="450" y="83" text-anchor="middle">LLM Orchestrator</text>
+            <text class="dg-label" x="450" y="100" text-anchor="middle" opacity="0.7">classify query intent</text>
+            <path d="M450 110v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar4)"/>
+
+            <path d="M450 128l124 42-124 42-124-42z" fill="#F2994A"/>
+            <text class="dg-label" x="450" y="166" text-anchor="middle">Is this a business query?</text>
+            <text class="dg-label" x="450" y="181" text-anchor="middle" opacity="0.8">services · hiring · support</text>
+
+            <path d="M326 170H186v36" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar4)"/>
+            <path d="M574 170h130v36" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar4)"/>
+            <rect x="214" y="150" width="92" height="20" rx="10" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="260" y="164" text-anchor="middle" fill="#0C6B42">YES · in scope</text>
+            <rect x="596" y="150" width="108" height="20" rx="10" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-edge" x="650" y="164" text-anchor="middle" fill="#A63A3A">NO · out of scope</text>
+
+            <!-- in scope -->
+            <rect x="66" y="206" width="240" height="44" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="186" y="233" text-anchor="middle" fill="#0C6B42">Route to the relevant tool</text>
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#ar4)">
+              <path d="M186 250v20h-62v22"/>
+              <path d="M186 250v20h62v22"/>
+            </g>
+            <rect x="60" y="292" width="126" height="66" rx="11" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="123" y="313" text-anchor="middle" fill="#1A4C9E">Knowledge tool</text>
+            <text class="dg-small" x="123" y="331" text-anchor="middle">services · portfolio</text>
+            <text class="dg-small" x="123" y="347" text-anchor="middle">pricing · contact</text>
+
+            <rect x="194" y="292" width="126" height="66" rx="11" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="257" y="313" text-anchor="middle" fill="#9A5A17">Action tool</text>
+            <text class="dg-small" x="257" y="331" text-anchor="middle">lead · consultation</text>
+            <text class="dg-small" x="257" y="347" text-anchor="middle">sales · issue form</text>
+
+            <!-- out of scope -->
+            <rect x="574" y="206" width="260" height="44" rx="12" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="704" y="233" text-anchor="middle" fill="#A63A3A">handle_irrelevant_queries</text>
+            <path d="M704 250v16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar4)"/>
+            <path d="M704 266l88 30-88 30-88-30z" fill="#E05252"/>
+            <text class="dg-label" x="704" y="300" text-anchor="middle">Query type?</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#ar4)">
+              <path d="M616 296H520v46"/>
+              <path d="M704 326v16"/>
+              <path d="M792 296h72v46"/>
+            </g>
+
+            <rect x="452" y="342" width="136" height="96" rx="11" fill="#fff" stroke="#F8D7D7"/>
+            <text class="dg-small" x="520" y="362" text-anchor="middle" fill="#A63A3A">HARDWARE ISSUE</text>
+            <text class="dg-quote" x="520" y="382" text-anchor="middle">“I can only help with</text>
+            <text class="dg-quote" x="520" y="398" text-anchor="middle">our own services — for</text>
+            <text class="dg-quote" x="520" y="414" text-anchor="middle">device problems, please</text>
+            <text class="dg-quote" x="520" y="430" text-anchor="middle">contact the maker.”</text>
+
+            <rect x="636" y="342" width="136" height="96" rx="11" fill="#fff" stroke="#F8D7D7"/>
+            <text class="dg-small" x="704" y="362" text-anchor="middle" fill="#A63A3A">NON-SOFTWARE BUILD</text>
+            <text class="dg-quote" x="704" y="382" text-anchor="middle">“I only assist with</text>
+            <text class="dg-quote" x="704" y="398" text-anchor="middle">software and AI work.</text>
+            <text class="dg-quote" x="704" y="414" text-anchor="middle">Want to build a site</text>
+            <text class="dg-quote" x="704" y="430" text-anchor="middle">or an app instead?”</text>
+
+            <rect x="796" y="342" width="94" height="96" rx="11" fill="#fff" stroke="#F8D7D7"/>
+            <text class="dg-small" x="843" y="362" text-anchor="middle" fill="#A63A3A">GENERAL</text>
+            <text class="dg-quote" x="843" y="382" text-anchor="middle">“I specialise in</text>
+            <text class="dg-quote" x="843" y="398" text-anchor="middle">our services —</text>
+            <text class="dg-quote" x="843" y="414" text-anchor="middle">can I help with</text>
+            <text class="dg-quote" x="843" y="430" text-anchor="middle">a tech project?”</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#ar4)">
+              <path d="M123 358v122h202"/>
+              <path d="M257 358v100h68"/>
+              <path d="M520 438v22"/>
+              <path d="M704 438v45H629"/>
+              <path d="M843 438v55H629"/>
+            </g>
+
+            <rect x="325" y="462" width="300" height="42" rx="12" fill="#7C5CFC"/>
+            <text class="dg-label" x="475" y="488" text-anchor="middle">Helpful, on-brand response</text>
+            <text class="dg-small" x="475" y="528" text-anchor="middle">both branches end somewhere useful — one answers, the other redirects</text>
+          </svg>
+        </div>
+        <figcaption>The guardrail is a tool inside the same loop, so the model itself decides when a query is out of scope — then picks the redirect pattern that fits.</figcaption>
+      </figure>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> guardrails.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Guardrail tool ───────────────────────────────────────────────────
+@tool
+def handle_irrelevant_queries(user_message: str = '') -> str:
+    '''Handles ANY query outside the company's business scope.
+    Triggered by the model when it judges a question out of scope.
+
+    Examples:
+      - General knowledge: 'What is the capital of France?'
+      - Hardware:          'How do I fix my phone?'
+      - Non-software:      'Can you build me a smart watch?'
+      - Personal advice:   'Good meditation techniques?'
+    '''
+    irrelevant_prompt = PromptTemplate(
+        template='''You are the website assistant.
+        USER MESSAGE: {user_message}
+        RESPONSE PATTERNS:
+          1. Hardware issue  -> apologise, point to the manufacturer.
+          2. Non-software    -> we build software and AI; offer that instead.
+          3. General query   -> acknowledge, redirect to our services.
+        Keep it to 1-2 sentences. End with an invitation.''',
+        input_variables=['user_message']
+    )
+    return (irrelevant_prompt | llm).invoke(
+        {'user_message': user_message}
+    ).content
+
+
+# ── Enforced from the system prompt ──────────────────────────────────
+system_prompt = '''
+CRITICAL QUERY VALIDATION — APPLY BEFORE EVERY RESPONSE:
+
+RELEVANT (use the appropriate tool):
+  - services, portfolio, pricing, team, awards, contact
+  - hiring us, consultations, sales, issue reports
+  - software / web / mobile / AI / cloud enquiries
+
+IRRELEVANT (MUST call handle_irrelevant_queries):
+  - general knowledge, tutorials, personal advice
+  - hardware, physical construction, non-tech services
+  - ANY topic outside the company's business
+
+RULE: if the query is about anything else, call the
+guardrail tool IMMEDIATELY.
+'''</code></pre>
+      </div>
+
+      <p>LangGraph also offers interrupt-based human-in-the-loop guardrails for flagging sensitive queries to a person. For this bot I chose the tool-based route, because it keeps the experience fully automated and instant.</p>
+    </section>
+
+    <!-- ================= OBSERVABILITY ================= -->
+    <section id="observability">
+      <div class="sec-num">05 · Testing &amp; Observability</div>
+      <h2>Making a probabilistic system debuggable</h2>
+      <p>You cannot unit-test an agent with exact expected strings — responses are probabilistic and context-dependent. What you can do is benchmark behaviour against a custom evaluation dataset, and trace every run in production.</p>
+
+      <h3>The evaluation dataset</h3>
+      <p>Representative question-and-expectation pairs across every tool domain:</p>
+      <ul class="bullets">
+        <li><strong>Knowledge:</strong> "What services do you offer?" → mentions web, mobile, AI, DevOps, security</li>
+        <li><strong>Action trigger:</strong> "I want to build a website" → emits the lead-form signal</li>
+        <li><strong>Guardrail:</strong> "What is the capital of France?" → polite redirect, no invented answer</li>
+        <li><strong>Follow-up context:</strong> "Tell me about web services" → "What's the pricing?" → web-specific pricing</li>
+        <li><strong>Industry routing:</strong> "I'm in healthcare, how can you help?" → healthcare-relevant recommendations</li>
+      </ul>
+      <p>Runs are scored on tool-selection accuracy, response relevance, hallucination rate and form-trigger accuracy.</p>
+
+      <div class="callout c-green">
+        <b>Release bar</b>
+        Above 90% correct tool routing on the evaluation set before going live, and re-evaluation after every new tool or prompt change, so regressions surface before customers meet them.
+      </div>
+
+      <h3>Tracing: the black box, opened</h3>
+      <p>When someone reports a wrong answer, guessing is not a debugging strategy. Tracing captures a complete execution record per invocation — the input, the reasoning at each step, every tool call and its output, the final response, plus token usage, latency and cost. Enabling it takes three environment variables, and instrumentation is automatic from there.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 900 520" role="img" aria-label="Observability: each reason, act and observe step is auto-captured into one trace per invocation, which feeds failed traces, token cost, latency, tool history and reasoning logs into a dashboard used to fix routing, speed up prompts and re-run evaluations">
+            <defs>
+              <marker id="ar5" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="ar5p" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#B8A6FB"/></marker>
+            </defs>
+
+            <!-- left: the run -->
+            <rect x="112" y="12" width="190" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="207" y="31" text-anchor="middle">Visitor sends a message</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar5)">
+              <path d="M207 42v20"/><path d="M207 104v20"/><path d="M207 170v18"/><path d="M207 234v18"/><path d="M207 298v20"/>
+            </g>
+
+            <rect x="112" y="62" width="190" height="42" rx="11" fill="#10141F"/>
+            <text class="dg-mono" x="207" y="88" text-anchor="middle" fill="#fff">agent_executor.invoke()</text>
+
+            <rect x="112" y="124" width="190" height="46" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="207" y="145" text-anchor="middle" fill="#0C6B42">Step 1 · Reason</text>
+            <text class="dg-small" x="207" y="161" text-anchor="middle" fill="#16A365">thought — which tool?</text>
+
+            <rect x="112" y="188" width="190" height="46" rx="11" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="207" y="209" text-anchor="middle" fill="#9A5A17">Step 2 · Act</text>
+            <text class="dg-small" x="207" y="225" text-anchor="middle" fill="#F2994A">run the selected tool</text>
+
+            <rect x="112" y="252" width="190" height="46" rx="11" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="207" y="273" text-anchor="middle" fill="#1A4C9E">Step 3 · Observe</text>
+            <text class="dg-small" x="207" y="289" text-anchor="middle" fill="#2F7BF6">process the result</text>
+
+            <path d="M207 318l84 32-84 32-84-32z" fill="#6B7180"/>
+            <text class="dg-label" x="207" y="354" text-anchor="middle">More steps?</text>
+
+            <path d="M123 350H40V147h68" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar5)"/>
+            <text class="dg-edge" x="40" y="250" text-anchor="middle">yes</text>
+
+            <path d="M207 382v20" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#ar5)"/>
+            <text class="dg-edge" x="222" y="396">no</text>
+            <rect x="112" y="402" width="190" height="32" rx="9" fill="#7C5CFC"/>
+            <text class="dg-label" x="207" y="422" text-anchor="middle">Final response → visitor</text>
+
+            <!-- capture arrows -->
+            <g stroke="#B8A6FB" stroke-width="1.3" fill="none" marker-end="url(#ar5p)" stroke-dasharray="4 3">
+              <path d="M302 147h88v22"/>
+              <path d="M302 211h88v-18"/>
+              <path d="M302 275h88v-62"/>
+            </g>
+            <text class="dg-edge" x="346" y="128" text-anchor="middle" fill="#7C5CFC">auto-captured</text>
+
+            <rect x="390" y="150" width="170" height="62" rx="13" fill="#7C5CFC"/>
+            <text class="dg-label" x="475" y="175" text-anchor="middle">Trace</text>
+            <text class="dg-label" x="475" y="193" text-anchor="middle" opacity="0.8">one per invocation</text>
+
+            <!-- what a trace holds -->
+            <g stroke="#B8A6FB" stroke-width="1.3" fill="none" marker-end="url(#ar5p)">
+              <path d="M560 172h60v-96h20"/>
+              <path d="M560 178h60v-38h20"/>
+              <path d="M560 184h60v20h20"/>
+              <path d="M560 190h60v78h20"/>
+              <path d="M560 196h60v136h20"/>
+            </g>
+            <g class="dg-small">
+              <rect x="640" y="60" width="224" height="32" rx="9" fill="#FDEEEE" stroke="#F8D7D7"/>
+              <text x="660" y="80" fill="#A63A3A">Failed traces · error debugging</text>
+              <rect x="640" y="124" width="224" height="32" rx="9" fill="#FFF2E7" stroke="#FFE0C2"/>
+              <text x="660" y="144" fill="#9A5A17">Token usage · cost per chat</text>
+              <rect x="640" y="188" width="224" height="32" rx="9" fill="#EAF2FF" stroke="#D6E7FF"/>
+              <text x="660" y="208" fill="#1A4C9E">Latency per step · bottlenecks</text>
+              <rect x="640" y="252" width="224" height="32" rx="9" fill="#E8FAF1" stroke="#CFF3E1"/>
+              <text x="660" y="272" fill="#0C6B42">Tool history · inputs &amp; outputs</text>
+              <rect x="640" y="316" width="224" height="32" rx="9" fill="#F2EEFF" stroke="#E1D9FF"/>
+              <text x="660" y="336" fill="#5B3FD6">Reasoning log · prompt &amp; reply</text>
+            </g>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M864 76h14"/>
+              <path d="M864 140h14"/>
+              <path d="M864 204h14"/>
+              <path d="M864 268h14"/>
+              <path d="M864 332h14"/>
+              <path d="M878 76v292" marker-end="url(#ar5)"/>
+            </g>
+
+            <rect x="596" y="372" width="290" height="46" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="741" y="392" text-anchor="middle">Dashboard</text>
+            <text class="dg-label" x="741" y="409" text-anchor="middle" opacity="0.7">benchmark · debug · optimise</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#ar5)">
+              <path d="M741 418v14H405v18"/>
+              <path d="M741 418v14H575v18"/>
+              <path d="M741 418v14h4v18"/>
+            </g>
+            <g class="dg-small" text-anchor="middle">
+              <rect x="330" y="450" width="150" height="34" rx="9" fill="#fff" stroke="#E8E9EF"/>
+              <text x="405" y="471" fill="#3F4653">Fix wrong routing</text>
+              <rect x="500" y="450" width="150" height="34" rx="9" fill="#fff" stroke="#E8E9EF"/>
+              <text x="575" y="471" fill="#3F4653">Optimise slow prompts</text>
+              <rect x="670" y="450" width="150" height="34" rx="9" fill="#fff" stroke="#E8E9EF"/>
+              <text x="745" y="471" fill="#3F4653">Re-run evaluations</text>
+            </g>
+          </svg>
+        </div>
+        <figcaption>Instrumentation is automatic: every step of every run is captured into a single trace, and the dashboard turns those traces into fixes — bad routing, slow prompts, or a regression caught by the evaluation set.</figcaption>
+      </figure>
+
+      <div class="trace">
+        <div class="trace-row"><div class="step">Step 1<span>Reason</span></div><div class="what">Input: system prompt + message + history → <code>"asks about AI services → call services_info"</code></div></div>
+        <div class="trace-row"><div class="step">Step 2<span>Act</span></div><div class="what">Tool: <code>services_info(user_message='What are your AI services?')</code> · latency 1.2s</div></div>
+        <div class="trace-row"><div class="step">Step 3<span>Observe</span></div><div class="what">Returns the curated AI capability list — ML, chatbots, NLP, computer vision, generative AI</div></div>
+        <div class="trace-row"><div class="step">Step 4<span>Respond</span></div><div class="what">Final reply composed · total 2.1s · 847 tokens · $0.004</div></div>
+      </div>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> observability.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Tracing: three variables, zero code changes ──────────────────────
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+os.environ['LANGCHAIN_API_KEY']   = os.getenv('LANGCHAIN_API_KEY')
+os.environ['LANGCHAIN_PROJECT']   = os.getenv('LANGCHAIN_PROJECT')
+os.environ['LANGCHAIN_TRACING_V2'] = 'true'
+
+# Every agent.invoke() is now traced automatically.
+
+
+# ── Benchmarking against the evaluation dataset ──────────────────────
+from langsmith import Client
+from langsmith.evaluation import evaluate
+
+client  = Client()
+dataset = client.create_dataset('website-chatbot-evals')
+
+client.create_examples(
+    inputs=[
+        {'message': 'What web development services do you offer?'},
+        {'message': 'I want to build a mobile app'},
+        {'message': 'What is the capital of France?'},   # guardrail test
+    ],
+    outputs=[
+        {'expected_tool':   'services_info'},
+        {'expected_signal': 'SHOW_LEAD_FORM'},
+        {'expected_tool':   'handle_irrelevant_queries'},
+    ],
+    dataset_id=dataset.id
+)
+
+results = evaluate(
+    lambda inputs: agent_executor.invoke(
+        {'messages': [HumanMessage(content=inputs['message'])]}
+    ),
+    data=dataset.name,
+    evaluators=['tool_selection_accuracy', 'response_relevance'],
+    experiment_prefix='chatbot-v1'
+)</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= OUTCOMES ================= -->
+    <section id="outcomes">
+      <div class="sec-num">06 · Outcomes</div>
+      <h2>What the architecture buys</h2>
+
+      <div class="outcomes">
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--purple-bg); color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg></span>Context-aware conversation</h4>
+          <p>Short-term memory per session means follow-ups, pronouns and mid-conversation direction changes all resolve naturally.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--green-bg); color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>Leads with their context attached</h4>
+          <p>Form submissions land in the CRM alongside the full conversation, so sales opens a lead already knowing the story.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--blue-bg); color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>Deterministic debugging</h4>
+          <p>Every answer has a trace: which tool ran, what it returned, what it cost. Wrong answers get diagnosed, not guessed at.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--orange-bg); color:#D9772B"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M14 7h7M3 17h7"/></svg></span>Cheap to extend</h4>
+          <p>A new domain is a new tool with its own prompt and knowledge — no rewrite of the agent, no growing mega-prompt.</p>
+        </div>
+      </div>
+
+      <h3>What I'd revisit next</h3>
+      <ul class="bullets">
+        <li>Moving session state to a database-backed checkpointer, so conversations survive a restart rather than living in process memory</li>
+        <li>Retrieval over the knowledge tools as the catalogue grows, instead of curated strings per tool</li>
+        <li>Automatic nightly evaluation runs, so prompt or model drift is caught by CI rather than by a customer</li>
+      </ul>
+    </section>
+
+  </article>
+</div>
+
+<footer class="doc-foot">
+  <div class="wrap foot-card">
+    <div>
+      <h3>Want the deeper version?</h3>
+      <p>Happy to walk through the routing logic, the eval set, or the CRM integration in detail.</p>
+    </div>
+    <div class="foot-actions">
+      <a class="btn btn-dark" href="../index.html#contact">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Get In Touch
+      </a>
+      <a class="btn btn-light" href="../index.html#works">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        All Projects
+      </a>
+    </div>
+  </div>
+</footer>
+<div class="copyright">Arqam Ahmed Ansari — AI Engineer · Karachi, Pakistan</div>
+
+<a class="to-top" href="#" id="toTop" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</a>
+
+<script src="../assets/js/case.js"></script>
+
+</body>
+</html>

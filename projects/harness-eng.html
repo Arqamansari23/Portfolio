@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Harness Eng — Autonomous Equity Research Agent | Arqam Ahmed Ansari</title>
+<meta name="description" content="A multi-subagent equity research harness built entirely on deepagents native features — subagents, skills, memory, checkpointing and human-in-the-loop as configuration, with zero custom orchestration code. Step-1 scaffold, architecture verified.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/case.css">
+<style>
+  /* page-specific: amber kicker + honest status table */
+  .k-orange{ background:var(--orange-bg); color:#C87A2B; border-color:var(--orange-line); }
+  .status{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; margin:20px 0; }
+  .status-row{ display:grid; grid-template-columns:minmax(0,1fr) 172px; gap:18px; align-items:start; padding:14px 18px; border-bottom:1px solid var(--border-soft); }
+  .status-row:last-child{ border-bottom:none; }
+  .status-row.head{ background:var(--bg); padding-top:10px; padding-bottom:10px; }
+  .status-row.head span{ font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:var(--muted-2); }
+  .status-row .feat b{ display:block; font-family:'JetBrains Mono',monospace; font-size:12.5px; font-weight:500; color:var(--ink); margin-bottom:4px; }
+  .status-row .feat p{ margin:0; font-size:13px; color:var(--muted); line-height:1.55; }
+  .pill{ display:inline-flex; align-items:center; gap:6px; font-size:11px; font-weight:700; padding:4px 10px; border-radius:999px; border:1px solid; white-space:nowrap; }
+  .pill::before{ content:''; width:6px; height:6px; border-radius:50%; background:currentColor; flex-shrink:0; }
+  .p-done{ color:var(--green); background:var(--green-bg); border-color:var(--green-line); }
+  .p-part{ color:#C87A2B; background:var(--orange-bg); border-color:var(--orange-line); }
+  .p-stub{ color:var(--red); background:var(--red-bg); border-color:var(--red-line); }
+  .p-plan{ color:var(--muted); background:#F4F5F7; border-color:var(--border); }
+  @media (max-width:560px){ .status-row{ grid-template-columns:1fr; gap:8px; } }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<nav class="doc-nav">
+  <div class="wrap">
+    <a class="back-link" href="../index.html#works">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Back to Portfolio
+    </a>
+    <div class="nav-actions">
+      <span class="nav-tag">Case Study</span>
+      <button class="toc-toggle" type="button" id="tocToggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Contents
+      </button>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-hero">
+  <div class="wrap">
+    <div class="kicker-row">
+      <span class="kicker k-purple">Multi-Agent Harness</span>
+      <span class="kicker k-orange">In Active Development</span>
+      <span class="kicker k-blue">Deep Agents · LangGraph</span>
+    </div>
+    <h1>Harness Eng: A Multi-Subagent Equity Research Harness on Deep Agents</h1>
+    <p class="standfirst">A lead-analyst agent that delegates filings, competitors, transcripts and modelling to four specialised subagents — built entirely out of <code class="inline">create_deep_agent()</code> parameters, with no bespoke orchestration, memory or checkpointing code. The restraint <em>is</em> the engineering. This page documents a verified step-1 scaffold and the build plan that follows it.</p>
+
+    <div class="hero-meta">
+      <div><span>My Role</span><b>AI Engineer — architecture &amp; build</b></div>
+      <div><span>Core Stack</span><b>deepagents · LangGraph · MCP · SQLite/Postgres checkpointing</b></div>
+      <div><span>Status</span><b>Step-1 scaffold · architecture verified</b></div>
+    </div>
+
+    <div class="stat-strip">
+      <div class="stat-box"><b>4</b><span>Specialized subagents, each with its own context</span></div>
+      <div class="stat-box"><b>2 Tiers</b><span>Long-term + thread-scoped memory</span></div>
+      <div class="stat-box"><b>0</b><span>Lines of custom orchestration code</span></div>
+      <div class="stat-box"><b>SQLite</b><span>Crash-resumable checkpointing, Postgres next</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="doc-body">
+
+  <aside class="toc" id="toc">
+    <h5>On this page</h5>
+    <a href="#problem" class="active">The problem</a>
+    <a href="#restraint">1 · Zero custom orchestration</a>
+    <a href="#architecture">2 · The harness</a>
+    <a href="#isolation">3 · Context isolation</a>
+    <a href="#skills">4 · Skills, memory &amp; the gate</a>
+    <a href="#durability">5 · Crash-resumable runs</a>
+    <a href="#status">6 · Build status, honestly</a>
+    <a href="#roadmap">7 · Roadmap &amp; running it</a>
+  </aside>
+
+  <article>
+
+    <!-- ================= PROBLEM ================= -->
+    <section id="problem">
+      <div class="sec-num">The Problem</div>
+      <h2>Equity research is four jobs pretending to be one</h2>
+      <p class="lead">Writing a research note on a listed company means reading hundreds of pages of filings, listening to three earnings calls, mapping a competitive set, and then building a model that ties all of it to a number. Each of those is a different reading mode, a different set of sources, and a different way to be wrong.</p>
+      <p>The obvious way to automate it is one agent with twenty tools. That agent drowns: a single 10-K dump fills its context window, the transcript analysis then competes with the filing text for attention, and by the time it reaches the valuation it has quietly forgotten the instructions it was given at the start.</p>
+      <p>So the design question is not "can an LLM read a 10-K" — it is <strong>how much of a multi-agent system do you actually have to write yourself?</strong> My answer here was: as close to none of it as possible.</p>
+
+      <div class="callout c-orange">
+        <b>Where this project actually stands — read this first</b>
+        This is a <strong>step-1 scaffold in active development</strong>, not a shipped product. The graph construction is verified: <code class="inline">create_deep_agent()</code> really does compile a LangGraph graph with the skills, memory and human-in-the-loop middleware attached. The MCP tools are still a placeholder, the sandbox backend is unset, and the approval gate is designed but not wired. Nothing below claims otherwise, and section 6 is a line-by-line status table.
+      </div>
+    </section>
+
+    <!-- ================= RESTRAINT ================= -->
+    <section id="restraint">
+      <div class="sec-num">01 · Design Principle</div>
+      <h2>The interesting decision was what <em>not</em> to build</h2>
+      <p>Every multi-agent project I have read starts by writing an orchestrator: a loop that picks a worker, a message bus between workers, a store for intermediate results, a retry policy, a way to persist state. That code is the fun part, and it is almost entirely a re-implementation of things <code class="inline">deepagents</code> and LangGraph already ship.</p>
+      <p>So the rule for this build was simple: <strong>if the framework has a parameter for it, I do not write code for it.</strong> Delegation, progressive-disclosure skills, long-term memory, persistence and human-in-the-loop are all arguments to a single constructor. What is left for me is the part that is actually specific to equity research — the roles, the prompts, the methodology files, and the judgement about where a human has to stay in the loop.</p>
+
+      <h3>What I ruled out, and why</h3>
+      <div class="compare">
+        <div class="row">
+          <h4>Hand-rolled orchestrator loop <span class="badge-x">Rejected</span></h4>
+          <p>A Python loop that classifies the request, calls worker functions and merges their output. Every failure mode — partial results, retries, resumption after a crash — becomes mine to solve, badly, a second time.</p>
+        </div>
+        <div class="row">
+          <h4>Raw LangGraph nodes and edges <span class="badge-x">Rejected</span></h4>
+          <p>Perfectly viable, and it is what sits underneath anyway. But hand-drawing the graph means hand-maintaining state schemas and interrupt plumbing for a topology that a higher-level API already expresses in a list.</p>
+        </div>
+        <div class="row">
+          <h4>One ReAct agent with twenty tools <span class="badge-x">Rejected</span></h4>
+          <p>Cheapest to start, worst to scale. Every source a tool returns lands in the same window, so filings, transcripts and peer data all compete for the same attention budget. This is the exact failure the project exists to avoid.</p>
+        </div>
+        <div class="row picked">
+          <h4>deepagents, configured not coded <span class="badge-ok">Chosen</span></h4>
+          <p>Subagents, skills, memory, checkpointing and interrupts are constructor parameters. The architecture becomes reviewable in one screen of configuration, and the framework owns the hard parts — isolation, persistence and resumption.</p>
+        </div>
+      </div>
+
+      <div class="callout c-blue">
+        <b>What that buys on a resume, honestly</b>
+        Not "I built an agent framework." It is "I can tell which parts of an agent system are already solved, and I spent my effort on the parts that are not" — the role definitions, the methodology encoded as skills, and the decision about where the human signs off.
+      </div>
+    </section>
+
+    <!-- ================= ARCHITECTURE ================= -->
+    <section id="architecture">
+      <div class="sec-num">02 · Architecture</div>
+      <h2>One lead analyst, four specialists, one constructor call</h2>
+      <p>The main agent is the lead analyst. It never reads a filing itself. It plans with <code class="inline">write_todos</code>, delegates each unit of work to the subagent whose <em>description</em> best matches it, and synthesises the returned briefs into a draft note. Firm conventions arrive from <code class="inline">AGENTS.md</code> at startup; every step of the graph is written to a checkpointer as it completes.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 640" role="img" aria-label="Deep agent architecture: a lead analyst agent plans with write_todos and delegates to four subagents, each with scoped tools and an optional skill; AGENTS.md memory loads at startup, a SQLite checkpointer persists every step, and a planned publish_report gate sits after synthesis">
+            <defs>
+              <marker id="d1a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="d1b" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#B4BAC6"/></marker>
+            </defs>
+
+            <!-- top row -->
+            <rect x="14" y="14" width="212" height="54" rx="13" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="120" y="38" text-anchor="middle" fill="#5B3FD6">AGENTS.md · long-term memory</text>
+            <text class="dg-small" x="120" y="55" text-anchor="middle" fill="#7C5CFC">firm conventions, loaded at startup</text>
+
+            <rect x="330" y="22" width="220" height="34" rx="9" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="44" text-anchor="middle">“Build a research note on TSLA”</text>
+
+            <rect x="654" y="14" width="212" height="54" rx="13" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="760" y="38" text-anchor="middle" fill="#0C6B42">SQLite checkpointer</text>
+            <text class="dg-small" x="760" y="55" text-anchor="middle" fill="#16A365">every graph step persisted</text>
+
+            <!-- main agent -->
+            <rect x="270" y="96" width="340" height="64" rx="14" fill="#10141F"/>
+            <text class="dg-label" x="440" y="122" text-anchor="middle">Main agent · lead analyst</text>
+            <text class="dg-label" x="440" y="140" text-anchor="middle" opacity="0.7">plans · delegates · synthesises the note</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)">
+              <path d="M440 56v34"/>
+              <path d="M226 41h22v77h18"/>
+              <path d="M610 118h22V44h22"/>
+              <path d="M440 160v12"/>
+            </g>
+            <rect x="194" y="72" width="90" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="239" y="84" text-anchor="middle">loaded at startup</text>
+            <rect x="584" y="72" width="112" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="640" y="84" text-anchor="middle">every step persisted</text>
+
+            <!-- planner -->
+            <rect x="372" y="176" width="136" height="28" rx="9" fill="#F2994A"/>
+            <text class="dg-label" x="440" y="195" text-anchor="middle">write_todos</text>
+            <text class="dg-edge" x="524" y="194">plans the delegation</text>
+
+            <!-- delegation bus -->
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M440 204v14"/>
+              <path d="M113 218H767"/>
+            </g>
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)">
+              <path d="M113 218v24"/><path d="M331 218v24"/><path d="M549 218v24"/><path d="M767 218v24"/>
+            </g>
+
+            <!-- subagent 1 -->
+            <rect x="10" y="250" width="206" height="190" rx="14" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="113" y="273" text-anchor="middle" fill="#1A4C9E">sec-filings-analyst</text>
+            <text class="dg-small" x="113" y="289" text-anchor="middle" fill="#2F7BF6">isolated context window</text>
+            <rect x="22" y="298" width="182" height="26" rx="7" fill="#fff" stroke="#E05252" stroke-dasharray="4 3"/>
+            <text class="dg-mono" x="88" y="315" text-anchor="middle" fill="#A63A3A">edgar_search</text>
+            <rect x="158" y="302" width="38" height="18" rx="6" fill="#E05252"/>
+            <text class="dg-label" x="177" y="315" text-anchor="middle">stub</text>
+            <rect x="22" y="332" width="182" height="26" rx="7" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="113" y="349" text-anchor="middle" fill="#1F2937">read_file · write_file</text>
+            <rect x="22" y="368" width="182" height="28" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="113" y="386" text-anchor="middle">skill: red-flag-checklist</text>
+            <text class="dg-small" x="113" y="414" text-anchor="middle" fill="#2F7BF6">returns: flagged line items</text>
+
+            <!-- subagent 2 -->
+            <rect x="228" y="250" width="206" height="190" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="331" y="273" text-anchor="middle" fill="#5B3FD6">competitor-research-agent</text>
+            <text class="dg-small" x="331" y="289" text-anchor="middle" fill="#7C5CFC">isolated context window</text>
+            <rect x="240" y="298" width="182" height="26" rx="7" fill="#fff" stroke="#E05252" stroke-dasharray="4 3"/>
+            <text class="dg-mono" x="306" y="315" text-anchor="middle" fill="#A63A3A">web_search</text>
+            <rect x="376" y="302" width="38" height="18" rx="6" fill="#E05252"/>
+            <text class="dg-label" x="395" y="315" text-anchor="middle">stub</text>
+            <rect x="240" y="332" width="182" height="26" rx="7" fill="#fff" stroke="#E1D9FF"/>
+            <text class="dg-mono" x="331" y="349" text-anchor="middle" fill="#1F2937">read_file · write_file</text>
+            <rect x="240" y="368" width="182" height="28" rx="8" fill="#7C5CFC"/>
+            <text class="dg-label" x="331" y="386" text-anchor="middle">no skill · prompt only</text>
+            <text class="dg-small" x="331" y="414" text-anchor="middle" fill="#7C5CFC">returns: peer comparison</text>
+
+            <!-- subagent 3 -->
+            <rect x="446" y="250" width="206" height="190" rx="14" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="549" y="273" text-anchor="middle" fill="#9A5A17">earnings-transcript-analyst</text>
+            <text class="dg-small" x="549" y="289" text-anchor="middle" fill="#D9772B">isolated context window</text>
+            <rect x="458" y="298" width="182" height="26" rx="7" fill="#fff" stroke="#E05252" stroke-dasharray="4 3"/>
+            <text class="dg-mono" x="524" y="315" text-anchor="middle" fill="#A63A3A">transcript_fetch</text>
+            <rect x="594" y="302" width="38" height="18" rx="6" fill="#E05252"/>
+            <text class="dg-label" x="613" y="315" text-anchor="middle">stub</text>
+            <rect x="458" y="332" width="182" height="26" rx="7" fill="#fff" stroke="#FFE0C2"/>
+            <text class="dg-mono" x="549" y="349" text-anchor="middle" fill="#1F2937">read_file · write_file</text>
+            <rect x="458" y="368" width="182" height="28" rx="8" fill="#F2994A"/>
+            <text class="dg-label" x="549" y="386" text-anchor="middle">no skill · prompt only</text>
+            <text class="dg-small" x="549" y="414" text-anchor="middle" fill="#D9772B">returns: management signals</text>
+
+            <!-- subagent 4 -->
+            <rect x="664" y="250" width="206" height="190" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="767" y="273" text-anchor="middle" fill="#0C6B42">financial-modeling-agent</text>
+            <text class="dg-small" x="767" y="289" text-anchor="middle" fill="#16A365">isolated context window</text>
+            <rect x="676" y="298" width="182" height="26" rx="7" fill="#fff" stroke="#E05252" stroke-dasharray="4 3"/>
+            <text class="dg-mono" x="742" y="315" text-anchor="middle" fill="#A63A3A">execute</text>
+            <rect x="812" y="302" width="38" height="18" rx="6" fill="#E05252"/>
+            <text class="dg-label" x="831" y="315" text-anchor="middle">unset</text>
+            <rect x="676" y="332" width="182" height="26" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="767" y="349" text-anchor="middle" fill="#1F2937">read_file · write_file</text>
+            <rect x="676" y="368" width="182" height="28" rx="8" fill="#16A365"/>
+            <text class="dg-label" x="767" y="386" text-anchor="middle">skill: dcf-methodology</text>
+            <text class="dg-small" x="767" y="414" text-anchor="middle" fill="#16A365">returns: valuation range</text>
+
+            <!-- return bus -->
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M113 440v12H440"/><path d="M331 440v12H440"/>
+              <path d="M549 440v12H440"/><path d="M767 440v12H440"/>
+            </g>
+            <path d="M440 452v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+            <rect x="150" y="444" width="168" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="234" y="456" text-anchor="middle">only the distilled brief returns</text>
+
+            <rect x="250" y="470" width="380" height="56" rx="14" fill="#10141F"/>
+            <text class="dg-label" x="440" y="494" text-anchor="middle">Lead agent synthesises the sub-reports</text>
+            <text class="dg-label" x="440" y="512" text-anchor="middle" opacity="0.7">→ draft equity research note</text>
+
+            <path d="M440 526v22" stroke="#B4BAC6" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#d1b)"/>
+            <rect x="280" y="548" width="320" height="42" rx="12" fill="#fff" stroke="#9599A6" stroke-dasharray="5 4"/>
+            <text class="dg-title" x="440" y="568" text-anchor="middle" fill="#6B7180">publish_report · human-in-the-loop gate</text>
+            <text class="dg-small" x="440" y="583" text-anchor="middle" fill="#9599A6">planned — not built yet</text>
+
+            <!-- legend -->
+            <rect x="176" y="604" width="14" height="14" rx="4" fill="#E8FAF1" stroke="#16A365"/>
+            <text class="dg-edge" x="198" y="615">wired &amp; verified to build</text>
+            <rect x="386" y="604" width="14" height="14" rx="4" fill="#fff" stroke="#E05252" stroke-dasharray="3 2"/>
+            <text class="dg-edge" x="408" y="615">stubbed / unset</text>
+            <rect x="566" y="604" width="14" height="14" rx="4" fill="#fff" stroke="#9599A6" stroke-dasharray="3 2"/>
+            <text class="dg-edge" x="588" y="615">planned</text>
+          </svg>
+        </div>
+        <figcaption>The whole topology is configuration. Solid components construct and compile today; the dashed ones — MCP-backed tools, the sandbox for <code class="inline">execute</code>, and the approval gate — are the next three pieces of work.</figcaption>
+      </figure>
+
+      <h3>The constructor <em>is</em> the architecture</h3>
+      <p>There is no orchestration module in this repo, because there is nothing for it to do. Delegation, skill loading, memory injection, persistence and interrupts are all arguments here:</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> agent.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── The entire harness is one constructor call ───────────────────────
+import os
+from deepagents import create_deep_agent
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+from subagents import (
+    SEC_FILINGS_ANALYST,
+    COMPETITOR_RESEARCH_AGENT,
+    EARNINGS_TRANSCRIPT_ANALYST,
+    FINANCIAL_MODELING_AGENT,
+)
+
+
+def build_agent(checkpointer):
+    return create_deep_agent(
+        model=os.environ['ANTHROPIC_MODEL'],   # set in .env
+        system_prompt=LEAD_ANALYST_PROMPT,     # lead analyst, not a doer
+        tools=mcp_tools,                       # STUB: placeholder server
+
+        # Delegation: four roles, each with its own context window
+        subagents=[
+            SEC_FILINGS_ANALYST,
+            COMPETITOR_RESEARCH_AGENT,
+            EARNINGS_TRANSCRIPT_ANALYST,
+            FINANCIAL_MODELING_AGENT,
+        ],
+
+        # Progressive disclosure: SKILL.md files, loaded on demand
+        skills=['./skills'],
+
+        # Long-term memory: desk conventions injected at startup
+        memory=['./AGENTS.md'],
+
+        # Durability: every graph step committed as it completes
+        checkpointer=checkpointer,
+
+        # Human-in-the-loop. TODO: a publish_report tool set to True,
+        # so the graph pauses before anything is finalised.
+        interrupt_on={'task': False},
+
+        # TODO: backend=... a sandbox so `execute` can run pandas.
+        # Unset today, which means `execute` errors if it is called.
+    )
+
+
+# VERIFIED: with an InMemorySaver and no API key, this compiles a real
+# LangGraph graph with the skills, memory and HITL middleware attached.
+# NOT VERIFIED: an end-to-end run. That needs step 1 and 2 of the plan.</code></pre>
+      </div>
+
+      <h3>A subagent is a dict, not a class hierarchy</h3>
+      <p>Each role is four fields. The <code class="inline">description</code> is load-bearing: it is what the lead agent reads when it decides where to route a task, so it is written as a routing contract rather than a summary. The <code class="inline">prompt</code> carries the working rules, and <code class="inline">tools</code> scopes what that role can touch — the modelling agent cannot browse, the research agent cannot execute code.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> subagents.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Role definitions: config, not code ───────────────────────────────
+
+SEC_FILINGS_ANALYST = {
+    'name': 'sec-filings-analyst',
+    # The description is the routing contract the lead agent reads.
+    'description': (
+        'Reads 10-K, 10-Q and 8-K filings for one ticker and reports '
+        'material risks, segment performance and accounting red flags. '
+        'Delegate here whenever an answer depends on primary filings.'
+    ),
+    'prompt': '''You are an SEC filings analyst.
+    Work the red-flag-checklist skill before you conclude anything.
+    Return at most 600 words: findings first, then the exact filing
+    sections you relied on. Never speculate beyond the text. If a
+    number is not in the filing, say so instead of estimating.''',
+    'tools': ['edgar_search', 'read_file', 'write_file'],
+}
+
+
+FINANCIAL_MODELING_AGENT = {
+    'name': 'financial-modeling-agent',
+    'description': (
+        'Builds the DCF and sensitivity tables from figures the other '
+        'analysts have already extracted. Delegate here only once the '
+        'inputs exist. Does not browse and does not read filings.'
+    ),
+    'prompt': DCF_ANALYST_PROMPT,
+    # `execute` runs pandas / numpy in a sandbox -- backend still unset,
+    # so this tool errors today. Sandbox is step 2 of the build plan.
+    'tools': ['execute', 'read_file', 'write_file'],
+}</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= ISOLATION ================= -->
+    <section id="isolation">
+      <div class="sec-num">03 · Context Isolation</div>
+      <h2>Why four windows beat one big one</h2>
+      <p class="lead">Subagents are not about parallelism here. They are about keeping a 214-page filing out of everyone else's head.</p>
+      <p>In a single-agent design, every artefact the agent touches stays in the transcript: the system prompt, the tool schemas, the full text of the 10-K, three transcripts, a dozen competitor pages. Attention degrades across a long context, and the instructions given at the top are the ones that fade first — right when the agent reaches the valuation and most needs its rules.</p>
+      <p>A subagent gets a fresh window and a scoped toolset. It reads whatever it has to read, and returns a short brief. The lead analyst accumulates four briefs, not four dumps.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 460" role="img" aria-label="Context isolation: a monolithic agent whose single window fills with filings, transcripts, competitor pages and raw financials, contrasted with the harness where four subagents each hold their own isolated window and return only a short brief to the lead analyst">
+            <defs>
+              <marker id="d2a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="d2b" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#16A365"/></marker>
+            </defs>
+
+            <!-- LEFT -->
+            <text class="dg-title" x="219" y="38" text-anchor="middle" fill="#A63A3A">Monolithic agent — one shared context</text>
+            <rect x="14" y="54" width="410" height="360" rx="14" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <rect x="44" y="74" width="350" height="32" rx="10" fill="#10141F"/>
+            <text class="dg-label" x="219" y="95" text-anchor="middle">Single agent · one window for everything</text>
+
+            <rect x="44" y="120" width="350" height="236" rx="11" fill="#fff" stroke="#F8D7D7"/>
+            <rect x="56" y="132" width="326" height="30" rx="7" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="68" y="152" fill="#7A3F3F">system prompt + 14 tool schemas</text>
+            <rect x="56" y="168" width="326" height="30" rx="7" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="68" y="188" fill="#7A3F3F">10-K full text · 214 pages</text>
+            <rect x="56" y="204" width="326" height="30" rx="7" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="68" y="224" fill="#7A3F3F">3 earnings-call transcripts</text>
+            <rect x="56" y="240" width="326" height="30" rx="7" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="68" y="260" fill="#7A3F3F">12 competitor web pages</text>
+            <rect x="56" y="276" width="326" height="30" rx="7" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="68" y="296" fill="#7A3F3F">peer financials · raw CSV</text>
+            <rect x="56" y="312" width="326" height="34" rx="8" fill="#E05252"/>
+            <text class="dg-label" x="219" y="334" text-anchor="middle">window nearly full — early rules fade</text>
+            <text class="dg-small" x="219" y="378" text-anchor="middle" fill="#A63A3A">one noisy tool dump degrades every later step</text>
+
+            <!-- RIGHT -->
+            <text class="dg-title" x="661" y="38" text-anchor="middle" fill="#0C6B42">The harness — isolated contexts</text>
+            <rect x="456" y="54" width="410" height="360" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <rect x="486" y="72" width="350" height="32" rx="10" fill="#10141F"/>
+            <text class="dg-label" x="661" y="93" text-anchor="middle">Lead analyst · plan and synthesis only</text>
+
+            <path d="M661 104v8H494V330" stroke="#9599A6" stroke-width="1.3" fill="none"/>
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#d2a)">
+              <path d="M494 144h8"/><path d="M494 206h8"/><path d="M494 268h8"/><path d="M494 330h8"/>
+            </g>
+
+            <rect x="506" y="116" width="310" height="56" rx="10" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="520" y="140" fill="#1F2937">sec-filings-analyst</text>
+            <text class="dg-small" x="520" y="157">own window · scoped tools</text>
+            <rect x="684" y="133" width="120" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="744" y="148" text-anchor="middle" fill="#0C6B42">→ 300-word brief</text>
+
+            <rect x="506" y="178" width="310" height="56" rx="10" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="520" y="202" fill="#1F2937">competitor-research-agent</text>
+            <text class="dg-small" x="520" y="219">own window · scoped tools</text>
+            <rect x="684" y="195" width="120" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="744" y="210" text-anchor="middle" fill="#0C6B42">→ 300-word brief</text>
+
+            <rect x="506" y="240" width="310" height="56" rx="10" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="520" y="264" fill="#1F2937">earnings-transcript-analyst</text>
+            <text class="dg-small" x="520" y="281">own window · scoped tools</text>
+            <rect x="684" y="257" width="120" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="744" y="272" text-anchor="middle" fill="#0C6B42">→ 300-word brief</text>
+
+            <rect x="506" y="302" width="310" height="56" rx="10" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="520" y="326" fill="#1F2937">financial-modeling-agent</text>
+            <text class="dg-small" x="520" y="343">own window · scoped tools</text>
+            <rect x="684" y="319" width="120" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="744" y="334" text-anchor="middle" fill="#0C6B42">→ valuation range</text>
+
+            <g stroke="#16A365" stroke-width="1.3" fill="none" marker-end="url(#d2b)">
+              <path d="M816 144h24v242H820"/>
+              <path d="M816 206h24v180H820"/>
+              <path d="M816 268h24v118H820"/>
+              <path d="M816 330h24v56H820"/>
+            </g>
+
+            <rect x="506" y="366" width="310" height="40" rx="11" fill="#16A365"/>
+            <text class="dg-label" x="661" y="390" text-anchor="middle">Lead sees 4 briefs, not 4 dumps</text>
+
+            <text class="dg-small" x="219" y="440" text-anchor="middle">everything competes for the same attention budget</text>
+            <text class="dg-small" x="661" y="440" text-anchor="middle">a 200-page dump never leaves the agent that read it</text>
+          </svg>
+        </div>
+        <figcaption>Isolation is a context-engineering decision before it is an architectural one: the lead analyst's window holds a plan and four summaries, so its instructions are still intact by the time it writes the note.</figcaption>
+      </figure>
+
+      <ul class="checks">
+        <li><strong>Scoped tools</strong> — the modelling agent has no browser, the research agent has no code execution. Fewer tools per role means less routing ambiguity too.</li>
+        <li><strong>Blast radius</strong> — a subagent that gets lost in a bad document burns its own window and returns a weak brief, rather than corrupting the whole run.</li>
+        <li><strong>Routing by description</strong> — adding a fifth role is a dict, not a rewrite of the lead prompt.</li>
+      </ul>
+
+      <div class="callout c-blue">
+        <b>What is not proven yet</b>
+        That the four descriptions route cleanly against real requests. Routing quality between subagents only shows up in an end-to-end run, and that needs real tools behind them — the first two roadmap items.
+      </div>
+    </section>
+
+    <!-- ================= SKILLS + HITL ================= -->
+    <section id="skills">
+      <div class="sec-num">04 · Skills, Memory &amp; the Gate</div>
+      <h2>Methodology as files, approval as an interrupt</h2>
+      <p>Domain methodology is the other thing that bloats a system prompt. DCF conventions, the red-flag checklist for a filing, how this desk treats terminal growth — all of it is important, and almost none of it is relevant on any given step.</p>
+      <p><strong>Skills</strong> solve that with progressive disclosure. Each methodology lives in a <code class="inline">SKILL.md</code> file under <code class="inline">./skills</code>. At startup only the name and one-line description enter the context; the body is pulled in by the subagent that actually needs it, into <em>that</em> agent's window.</p>
+      <p><strong>Memory</strong> is two tiers. <code class="inline">AGENTS.md</code> is long-term: firm conventions that are true on every run, injected at startup. Thread-scoped state is short-term: the todos, the intermediate briefs and the message history for this one piece of research.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 510" role="img" aria-label="Progressive disclosure and the planned approval gate: SKILL.md files contribute only names and descriptions to the main context at startup, their full bodies load into the subagent that needs them, and a planned publish_report interrupt pauses the graph for human approval before the note is published">
+            <defs>
+              <marker id="d4a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="d4b" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#B4BAC6"/></marker>
+            </defs>
+
+            <rect x="24" y="40" width="300" height="76" rx="13" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="44" y="64" fill="#5B3FD6">./skills/</text>
+            <text class="dg-mono" x="44" y="86" fill="#5B3FD6">dcf-methodology/SKILL.md</text>
+            <text class="dg-mono" x="44" y="104" fill="#5B3FD6">red-flag-checklist/SKILL.md</text>
+
+            <path d="M324 78h44" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+
+            <rect x="376" y="40" width="480" height="76" rx="13" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-title" x="392" y="62" fill="#0E1320">Main context at startup</text>
+            <text class="dg-mono" x="392" y="84" fill="#6B7180">dcf-methodology — DCF assumptions &amp; conventions</text>
+            <text class="dg-mono" x="392" y="102" fill="#6B7180">red-flag-checklist — filing red flags to scan for</text>
+            <rect x="686" y="46" width="158" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="765" y="61" text-anchor="middle" fill="#0C6B42">names + descriptions only</text>
+
+            <path d="M616 116v12H440v12" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+
+            <rect x="270" y="140" width="340" height="46" rx="12" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="440" y="162" text-anchor="middle" fill="#9A5A17">A subagent hits work that needs it</text>
+            <text class="dg-small" x="440" y="178" text-anchor="middle" fill="#D9772B">“build the DCF” · “scan the filing”</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M440 186v16"/><path d="M190 202H690"/>
+            </g>
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)">
+              <path d="M190 202v10"/><path d="M690 202v10"/>
+            </g>
+
+            <rect x="40" y="220" width="300" height="118" rx="13" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="190" y="246" text-anchor="middle" fill="#0C6B42">financial-modeling-agent</text>
+            <text class="dg-small" x="190" y="262" text-anchor="middle" fill="#16A365">loads it into its own window</text>
+            <rect x="56" y="272" width="268" height="26" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="190" y="289" text-anchor="middle" fill="#1F2937">+ dcf-methodology body</text>
+            <text class="dg-small" x="190" y="316" text-anchor="middle" fill="#16A365">WACC · terminal growth · sanity checks</text>
+
+            <rect x="540" y="220" width="300" height="118" rx="13" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="690" y="246" text-anchor="middle" fill="#1A4C9E">sec-filings-analyst</text>
+            <text class="dg-small" x="690" y="262" text-anchor="middle" fill="#2F7BF6">loads it into its own window</text>
+            <rect x="556" y="272" width="268" height="26" rx="7" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="690" y="289" text-anchor="middle" fill="#1F2937">+ red-flag-checklist body</text>
+            <text class="dg-small" x="690" y="316" text-anchor="middle" fill="#2F7BF6">revenue recognition · related-party items</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M190 338v12H440"/><path d="M690 338v12H440"/>
+            </g>
+            <path d="M440 350v10" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+
+            <rect x="270" y="360" width="340" height="38" rx="11" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="440" y="384" text-anchor="middle" fill="#5B3FD6">The main window never loads either body</text>
+
+            <path d="M440 398v20H115v22" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+            <text class="dg-edge" x="700" y="424" text-anchor="middle">roadmap step 3 — the safety property, not yet built</text>
+
+            <rect x="20" y="440" width="190" height="44" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="115" y="459" text-anchor="middle">Draft research note</text>
+            <text class="dg-label" x="115" y="475" text-anchor="middle" opacity="0.7">assembled by the lead</text>
+
+            <path d="M210 462h32" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+
+            <rect x="250" y="440" width="210" height="44" rx="12" fill="#fff" stroke="#E05252" stroke-dasharray="5 4"/>
+            <text class="dg-title" x="355" y="459" text-anchor="middle" fill="#A63A3A">publish_report · interrupt_on</text>
+            <text class="dg-small" x="355" y="475" text-anchor="middle" fill="#E05252">graph pauses — PLANNED</text>
+
+            <path d="M460 462h32" stroke="#B4BAC6" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#d4b)"/>
+
+            <rect x="500" y="440" width="170" height="44" rx="12" fill="#7C5CFC"/>
+            <text class="dg-label" x="585" y="459" text-anchor="middle">Human reviews</text>
+            <text class="dg-label" x="585" y="475" text-anchor="middle" opacity="0.8">approve or edit</text>
+
+            <path d="M670 462h32" stroke="#B4BAC6" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#d4b)"/>
+
+            <rect x="710" y="440" width="150" height="44" rx="12" fill="#16A365"/>
+            <text class="dg-label" x="785" y="459" text-anchor="middle">Note published</text>
+            <text class="dg-label" x="785" y="475" text-anchor="middle" opacity="0.8">nothing auto-sent</text>
+          </svg>
+        </div>
+        <figcaption>Left half is built and loading from disk today. The bottom row is designed and not yet wired — <code class="inline">interrupt_on</code> currently carries <code class="inline">task: False</code>, so nothing pauses.</figcaption>
+      </figure>
+
+      <h3>A skill is a file a human can review</h3>
+      <p>That is the underrated part. Valuation conventions written into a prompt string are invisible to the analyst whose conventions they are. Written as a file, they can be read, argued with and version-controlled by someone who has never opened the agent code.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> skills/dcf-methodology/SKILL.md</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code>---
+name: dcf-methodology
+description: Build and sanity-check a DCF for a listed company. Use
+  when asked for intrinsic value, a valuation range, or a WACC.
+---
+
+# DCF methodology
+
+## When this desk uses a DCF
+Only for companies with positive, forecastable operating cash flow.
+For pre-profit names, use comparables and say so in the note.
+
+## Required inputs
+- 5 years of historical free cash flow, from the cash-flow statement
+- Segment revenue split, from the most recent 10-K
+- Net debt and diluted share count, as of the last reported quarter
+
+## House conventions
+- Risk-free rate: the current 10Y treasury, not a long-run average
+- Terminal growth: capped at 2.5 percent. Anything higher needs a
+  written justification printed in the output.
+- Always produce a sensitivity grid: WACC plus or minus 1.0 point
+  against terminal growth plus or minus 0.5 point.
+
+## Output contract
+Return the base case, the grid, and the three assumptions the
+valuation is most sensitive to. Flag every figure you estimated
+rather than sourced, and name the source for the ones you did.</code></pre>
+      </div>
+
+      <div class="callout c-orange">
+        <b>Why the gate matters more than the model</b>
+        An agent that can research is useful. An agent that can research <em>and publish</em> is a liability. The planned <code class="inline">publish_report</code> interrupt is the difference: a tool that exists only to be intercepted, so the graph physically cannot finalise a note without a human decision. It is item 3 on the build plan, and it is the property that makes this project defensible rather than merely impressive.
+      </div>
+    </section>
+
+    <!-- ================= DURABILITY ================= -->
+    <section id="durability">
+      <div class="sec-num">05 · Durability</div>
+      <h2>A long research run has to survive being interrupted</h2>
+      <p>A multi-subagent run is a sequence of expensive steps. If the process dies at step four — a laptop sleeps, a rate limit hits, someone presses Ctrl-C — restarting from zero means re-reading the filing and re-paying for every token that already produced a good result.</p>
+      <p>LangGraph checkpointing removes that failure mode without any code of mine. Each completed step is committed to the checkpointer against a <code class="inline">thread_id</code>. Rerun with the same id and the graph reloads the last committed state and continues from there.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 430" role="img" aria-label="Crash-resumable execution timeline: run one completes and checkpoints three steps before being killed during step four; run two with the same thread_id restores steps one to three from the checkpointer and resumes at step four">
+            <defs>
+              <marker id="d3a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="d3r" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#E05252"/></marker>
+              <marker id="d3g" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#16A365"/></marker>
+            </defs>
+
+            <text class="dg-title" x="40" y="36" fill="#A63A3A">Run 1 — killed part-way through</text>
+
+            <rect x="60" y="60" width="140" height="46" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="130" y="80" text-anchor="middle" fill="#0C6B42">1 · write_todos</text>
+            <text class="dg-small" x="130" y="96" text-anchor="middle" fill="#16A365">plan the delegation</text>
+
+            <rect x="216" y="60" width="140" height="46" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="286" y="80" text-anchor="middle" fill="#0C6B42">2 · sec filings</text>
+            <text class="dg-small" x="286" y="96" text-anchor="middle" fill="#16A365">10-K scanned</text>
+
+            <rect x="372" y="60" width="140" height="46" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="442" y="80" text-anchor="middle" fill="#0C6B42">3 · competitors</text>
+            <text class="dg-small" x="442" y="96" text-anchor="middle" fill="#16A365">peer set built</text>
+
+            <rect x="528" y="60" width="140" height="46" rx="11" fill="#fff" stroke="#9599A6" stroke-dasharray="5 4"/>
+            <text class="dg-title" x="598" y="80" text-anchor="middle" fill="#6B7180">4 · transcripts</text>
+            <text class="dg-small" x="598" y="96" text-anchor="middle">in flight</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)">
+              <path d="M200 83h9"/><path d="M356 83h9"/><path d="M512 83h9"/>
+            </g>
+            <path d="M668 83h14" stroke="#E05252" stroke-width="1.4" fill="none" marker-end="url(#d3r)"/>
+
+            <rect x="692" y="60" width="140" height="46" rx="11" fill="#FDEEEE" stroke="#E05252" stroke-dasharray="5 4"/>
+            <text class="dg-title" x="762" y="80" text-anchor="middle" fill="#A63A3A">✗ process killed</text>
+            <text class="dg-small" x="762" y="96" text-anchor="middle" fill="#E05252">Ctrl-C · crash · timeout</text>
+
+            <g stroke="#16A365" stroke-width="1.3" fill="none" stroke-dasharray="4 3" marker-end="url(#d3g)">
+              <path d="M130 106v12"/><path d="M286 106v12"/><path d="M442 106v12"/>
+            </g>
+
+            <rect x="82" y="124" width="96" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="130" y="139" text-anchor="middle" fill="#0C6B42">checkpoint 1</text>
+            <rect x="238" y="124" width="96" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="286" y="139" text-anchor="middle" fill="#0C6B42">checkpoint 2</text>
+            <rect x="394" y="124" width="96" height="22" rx="7" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-edge" x="442" y="139" text-anchor="middle" fill="#0C6B42">checkpoint 3</text>
+            <text class="dg-edge" x="690" y="139" text-anchor="middle" fill="#A63A3A">step 4 never committed</text>
+
+            <g stroke="#16A365" stroke-width="1.3" fill="none" marker-end="url(#d3g)">
+              <path d="M130 146v6"/><path d="M286 146v6"/><path d="M442 146v6"/>
+            </g>
+
+            <rect x="40" y="156" width="800" height="54" rx="13" fill="#10141F"/>
+            <text class="dg-label" x="440" y="180" text-anchor="middle">SQLite checkpointer — every graph step committed as it lands</text>
+            <text class="dg-label" x="440" y="198" text-anchor="middle" opacity="0.7">thread_id = 'tsla-research-01'</text>
+
+            <path d="M380 210v58" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+            <rect x="306" y="218" width="150" height="18" rx="9" fill="#fff"/>
+            <text class="dg-edge" x="381" y="231" text-anchor="middle">rerun with the same thread_id</text>
+
+            <text class="dg-title" x="40" y="258" fill="#0C6B42">Run 2 — same thread_id</text>
+
+            <rect x="60" y="270" width="452" height="46" rx="11" fill="#F4F5F7" stroke="#E8E9EF"/>
+            <text class="dg-title" x="286" y="290" text-anchor="middle" fill="#6B7180">Steps 1–3 restored from the checkpoint</text>
+            <text class="dg-small" x="286" y="306" text-anchor="middle">not re-run · no tokens re-spent · no filing re-read</text>
+
+            <rect x="528" y="270" width="140" height="46" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="598" y="290" text-anchor="middle" fill="#0C6B42">4 · transcripts</text>
+            <text class="dg-small" x="598" y="306" text-anchor="middle" fill="#16A365">resumes here</text>
+
+            <rect x="684" y="270" width="140" height="46" rx="11" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="754" y="290" text-anchor="middle" fill="#0C6B42">5 · synthesis</text>
+            <text class="dg-small" x="754" y="306" text-anchor="middle" fill="#16A365">note drafted</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)">
+              <path d="M512 293h9"/><path d="M668 293h9"/>
+              <path d="M754 316v20H440v14"/>
+            </g>
+
+            <rect x="320" y="352" width="240" height="40" rx="11" fill="#7C5CFC"/>
+            <text class="dg-label" x="440" y="376" text-anchor="middle">Run completes from step 4</text>
+
+            <text class="dg-small" x="440" y="414" text-anchor="middle">without a checkpointer, run 2 starts at step 1 and re-pays for every tool call</text>
+          </svg>
+        </div>
+        <figcaption>Wired correctly today with <code class="inline">SqliteSaver.from_conn_string</code> as a context manager. The kill-and-resume test itself is item 4 on the build plan — the mechanism is standard LangGraph, but I have not yet proven it on this graph.</figcaption>
+      </figure>
+
+      <div class="callout c-blue">
+        <b>The context-manager detail</b>
+        <code class="inline">SqliteSaver.from_conn_string()</code> returns a context manager, not a saver. Building the agent outside the <code class="inline">with</code> block hands it a connection that is already closed — a quiet, confusing failure. The agent is therefore constructed inside the block, which also means the whole run lives inside it.
+      </div>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> run.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Crash-resumable runs: the thread_id is the whole trick ───────────
+import sys
+from langgraph.checkpoint.sqlite import SqliteSaver
+from agent import build_agent
+
+THREAD_ID = 'tsla-research-01'
+
+# from_conn_string returns a context manager. Build the agent INSIDE
+# it, or the graph gets a connection that is already closed.
+with SqliteSaver.from_conn_string('./checkpoints.sqlite') as checkpointer:
+
+    agent  = build_agent(checkpointer)
+    config = {'configurable': {'thread_id': THREAD_ID}}
+
+    result = agent.invoke(
+        {'messages': [{'role': 'user', 'content': sys.argv[1]}]},
+        config=config,
+    )
+
+    print(result['messages'][-1].content)
+
+# Kill the process at step 4, then run the exact same command again.
+# LangGraph reloads the last committed checkpoint for THREAD_ID and
+# continues from step 4 instead of re-running steps 1 to 3.
+#
+# Postgres is the same three lines:
+#     from langgraph.checkpoint.postgres import PostgresSaver
+#     with PostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
+# Same API, different connection string.</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= STATUS ================= -->
+    <section id="status">
+      <div class="sec-num">06 · Build Status</div>
+      <h2>What is verified, what is stubbed, what is not there yet</h2>
+      <p class="lead">This is the section I would want to read first if someone else had written this page. Every claim above maps to one of these rows.</p>
+      <p>"Verified" here has a precise meaning: the graph construction was exercised with an <code class="inline">InMemorySaver</code> and no API key, and it produced a compiled LangGraph graph with the skills, memory and human-in-the-loop middleware attached. That proves the wiring. It does not prove the agent does good equity research, because it has not yet run one.</p>
+
+      <div class="status">
+        <div class="status-row head"><span>Component</span><span>Status</span></div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>create_deep_agent graph construction</b>
+            <p>Actually builds a compiled LangGraph graph with the skills, memory and HITL middleware attached. Tested with <code class="inline">InMemorySaver</code>, no API key needed.</p>
+          </div>
+          <div><span class="pill p-done">Verified working</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>Subagents — 4 roles</b>
+            <p>Defined as configuration: name, description, prompt, tools. Untested end to end; running them needs an API key and real tools behind them.</p>
+          </div>
+          <div><span class="pill p-part">Config only</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>Skills — dcf-methodology, red-flag-checklist</b>
+            <p>Real <code class="inline">SKILL.md</code> files on disk, loaded via <code class="inline">skills=["./skills"]</code>.</p>
+          </div>
+          <div><span class="pill p-done">Real files, loading</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>Long-term memory — AGENTS.md</b>
+            <p>Real file of desk conventions, loaded via <code class="inline">memory=["./AGENTS.md"]</code> and injected at startup.</p>
+          </div>
+          <div><span class="pill p-done">Real file, loading</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>Checkpointer — SQLite, resumable</b>
+            <p>Wired correctly with <code class="inline">SqliteSaver.from_conn_string</code> used as a context manager. The kill-and-resume behaviour has not been exercised yet.</p>
+          </div>
+          <div><span class="pill p-part">Wired, untested</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>MCP tools</b>
+            <p><code class="inline">load_mcp_tools()</code> points at a placeholder Brave Search MCP server. The real servers — SEC EDGAR and a search provider — have not been chosen yet.</p>
+          </div>
+          <div><span class="pill p-stub">Stubbed</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>Sandbox for the modelling subagent</b>
+            <p><code class="inline">backend=</code> is unset, so the <code class="inline">execute</code> tool currently errors instead of running pandas or numpy.</p>
+          </div>
+          <div><span class="pill p-stub">Not configured</span></div>
+        </div>
+
+        <div class="status-row">
+          <div class="feat">
+            <b>Human-in-the-loop gate on the final report</b>
+            <p><code class="inline">interrupt_on</code> currently carries <code class="inline">task: False</code>. It needs a dedicated <code class="inline">publish_report</code> tool set to <code class="inline">True</code> so the graph pauses before anything is finalised.</p>
+          </div>
+          <div><span class="pill p-plan">Not added yet</span></div>
+        </div>
+      </div>
+
+      <div class="callout c-green">
+        <b>The honest headline</b>
+        A well-engineered skeleton with the architecture proven, and a build plan with no unknown unknowns left in it. Not "production-ready" — <strong>in active development, architecture verified</strong>. Every remaining item is a known change to a known parameter, which is exactly what you want the remaining work to look like.
+      </div>
+    </section>
+
+    <!-- ================= ROADMAP ================= -->
+    <section id="roadmap">
+      <div class="sec-num">07 · Roadmap</div>
+      <h2>Five steps, in the order they unblock each other</h2>
+      <p>The order is not arbitrary. Nothing can be evaluated end to end until the tools are real, so MCP comes first. The sandbox comes next because the modelling role is the only one that is hard-blocked without it. The approval gate comes before durability work, because it is the safety property — and durability of an unsafe system is not an improvement.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 900 240" role="img" aria-label="Build order: real MCP servers, then a sandbox backend, then the human-in-the-loop gate, then a checkpoint resume test, then swapping SQLite for Postgres — grouped into making it run, making it safe and making it durable">
+            <defs>
+              <marker id="d5a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="10" y="20" width="214" height="28" rx="9" fill="#10141F"/>
+            <text class="dg-label" x="117" y="39" text-anchor="middle">Today · verified scaffold</text>
+            <path d="M117 48v14" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d5a)"/>
+
+            <rect x="10" y="70" width="148" height="110" rx="13" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <circle cx="34" cy="94" r="13" fill="#F2994A"/>
+            <text class="dg-label" x="34" y="98" text-anchor="middle">1</text>
+            <text class="dg-title" x="54" y="98" fill="#9A5A17">MCP servers</text>
+            <text class="dg-small" x="22" y="126">replace the Brave stub;</text>
+            <text class="dg-small" x="22" y="142">EDGAR has no official</text>
+            <text class="dg-small" x="22" y="158">server — wrap its API</text>
+
+            <rect x="193" y="70" width="148" height="110" rx="13" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <circle cx="217" cy="94" r="13" fill="#F2994A"/>
+            <text class="dg-label" x="217" y="98" text-anchor="middle">2</text>
+            <text class="dg-title" x="237" y="98" fill="#9A5A17">Sandbox</text>
+            <text class="dg-small" x="205" y="126">set backend= (Daytona,</text>
+            <text class="dg-small" x="205" y="142">Modal) so execute runs</text>
+            <text class="dg-small" x="205" y="158">pandas; trivial DCF first</text>
+
+            <rect x="376" y="70" width="148" height="110" rx="13" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <circle cx="400" cy="94" r="13" fill="#E05252"/>
+            <text class="dg-label" x="400" y="98" text-anchor="middle">3</text>
+            <text class="dg-title" x="420" y="98" fill="#A63A3A">HITL gate</text>
+            <text class="dg-small" x="388" y="126">publish_report tool at</text>
+            <text class="dg-small" x="388" y="142">the very end, with</text>
+            <text class="dg-small" x="388" y="158">interrupt_on set True</text>
+
+            <rect x="559" y="70" width="148" height="110" rx="13" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <circle cx="583" cy="94" r="13" fill="#2F7BF6"/>
+            <text class="dg-label" x="583" y="98" text-anchor="middle">4</text>
+            <text class="dg-title" x="603" y="98" fill="#1A4C9E">Resume test</text>
+            <text class="dg-small" x="571" y="126">kill it mid-run, rerun</text>
+            <text class="dg-small" x="571" y="142">same thread_id, confirm</text>
+            <text class="dg-small" x="571" y="158">it resumes, not restarts</text>
+
+            <rect x="742" y="70" width="148" height="110" rx="13" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <circle cx="766" cy="94" r="13" fill="#2F7BF6"/>
+            <text class="dg-label" x="766" y="98" text-anchor="middle">5</text>
+            <text class="dg-title" x="786" y="98" fill="#1A4C9E">Postgres</text>
+            <text class="dg-small" x="754" y="126">langgraph-checkpoint-</text>
+            <text class="dg-small" x="754" y="142">postgres — same API,</text>
+            <text class="dg-small" x="754" y="158">new connection string</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d5a)">
+              <path d="M158 125h25"/><path d="M341 125h25"/><path d="M524 125h25"/><path d="M707 125h25"/>
+            </g>
+
+            <g stroke="#C9CDD6" stroke-width="1.3" fill="none">
+              <path d="M10 190v6h331v-6"/>
+              <path d="M376 190v6h148v-6"/>
+              <path d="M559 190v6h331v-6"/>
+            </g>
+            <text class="dg-edge" x="175" y="214" text-anchor="middle">makes it actually run</text>
+            <text class="dg-edge" x="450" y="214" text-anchor="middle">makes it safe</text>
+            <text class="dg-edge" x="724" y="214" text-anchor="middle">makes it durable</text>
+          </svg>
+        </div>
+        <figcaption>Each step is a change to a parameter or a new tool definition — none of them requires re-architecting the harness, which is the payoff for having built it out of framework primitives.</figcaption>
+      </figure>
+
+      <div class="trace">
+        <div class="trace-row">
+          <div class="step">Step 1<span>Real MCP servers</span></div>
+          <div class="what">Replace the placeholder Brave Search server. The wrinkle: <strong>SEC EDGAR has no official MCP server</strong>, so this likely means wrapping EDGAR's REST and full-text-search API as a custom MCP server — or, as a faster first cut, a general web-search MCP server plus a plain LangChain tool for EDGAR. Until this lands, nothing can be evaluated end to end.</div>
+        </div>
+        <div class="trace-row">
+          <div class="step">Step 2<span>Sandbox backend</span></div>
+          <div class="what">Set <code>backend=</code> to a sandbox (Daytona or Modal, per the deepagents sandboxes docs) so <code>execute</code> actually runs pandas and numpy. Test with a deliberately trivial DCF before letting the modelling agent near real figures — if a three-line discount calculation does not come back clean, nothing downstream is trustworthy.</div>
+        </div>
+        <div class="trace-row">
+          <div class="step">Step 3<span>Real HITL gate</span></div>
+          <div class="what">Add a <code>publish_report</code> tool that is called only at the very end, and set <code>interrupt_on={"publish_report": True}</code> so the graph pauses for a human decision before anything is finalised. This is the safety property that makes the project defensible, and it is cheap precisely because the framework already implements interrupts.</div>
+        </div>
+        <div class="trace-row">
+          <div class="step">Step 4<span>Checkpoint / resume test</span></div>
+          <div class="what">Kill the process mid-run and rerun with the same <code>thread_id</code>. Confirm it resumes from the last committed step rather than restarting — and confirm what happens to the step that was in flight when it died, which is the part worth actually observing.</div>
+        </div>
+        <div class="trace-row">
+          <div class="step">Step 5<span>Postgres checkpointer</span></div>
+          <div class="what">Swap SQLite for <code>langgraph-checkpoint-postgres</code>. Same API surface, a connection-string change, and concurrent runs stop contending on a single file.</div>
+        </div>
+      </div>
+
+      <h3>Running it today</h3>
+      <p>The scaffold installs and constructs cleanly. What it cannot yet do is complete a real research run, because steps 1 and 2 above are the tools it would need.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> setup</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># install
+pip install -r requirements.txt
+
+# .env  — ANTHROPIC_API_KEY plus the MCP provider keys
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=...
+BRAVE_API_KEY=...          # placeholder server, to be replaced
+
+# run
+python agent.py "Build a research note on Tesla (TSLA)"
+
+# resume after a crash: exactly the same command, same thread_id</code></pre>
+      </div>
+
+      <h3>What the architecture already buys</h3>
+      <div class="outcomes">
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--purple-bg); color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M14 7h7M3 17h7"/></svg></span>An architecture you can read in one screen</h4>
+          <p>The topology is a constructor call. A reviewer can see every role, skill, memory source and interrupt without opening a second file.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--blue-bg); color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 12h18"/></svg></span>Context isolation by construction</h4>
+          <p>Each subagent gets its own window and its own tool scope, so a large document can never leak into a role that had no business reading it.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--green-bg); color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>Methodology a human can edit</h4>
+          <p>DCF conventions and filing red flags live in reviewable <code class="inline">SKILL.md</code> files, not buried in a prompt string.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--orange-bg); color:#D9772B"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>Remaining work is configuration</h4>
+          <p>Five known parameter changes, no re-architecture. That is the whole reason for having refused to write an orchestrator.</p>
+        </div>
+      </div>
+
+      <h3>What I would want challenged</h3>
+      <ul class="bullets">
+        <li><strong>Do the four role descriptions actually route well?</strong> Untestable until the tools are real. If the lead agent routes a transcript question to the filings analyst, the fix is a description rewrite, not a code change — but I want the evidence before I claim it works.</li>
+        <li><strong>Is a sandbox per run affordable?</strong> Spinning up an execution backend for a single DCF may be heavier than the modelling role justifies. Worth measuring before committing.</li>
+        <li><strong>Is one approval gate enough?</strong> A single gate at publish is the minimum defensible design. A more conservative version would also gate anything that spends money or touches an external system.</li>
+      </ul>
+    </section>
+
+  </article>
+</div>
+
+<footer class="doc-foot">
+  <div class="wrap foot-card">
+    <div>
+      <h3>Want to argue with the design?</h3>
+      <p>Happy to walk through the subagent boundaries, the skills format, or where the approval gate should sit.</p>
+    </div>
+    <div class="foot-actions">
+      <a class="btn btn-dark" href="../index.html#contact">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Get In Touch
+      </a>
+      <a class="btn btn-light" href="../index.html#works">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        All Projects
+      </a>
+    </div>
+  </div>
+</footer>
+<div class="copyright">Arqam Ahmed Ansari — AI Engineer · Karachi, Pakistan</div>
+
+<a class="to-top" href="#" id="toTop" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</a>
+
+<script src="../assets/js/case.js"></script>
+
+</body>
+</html>

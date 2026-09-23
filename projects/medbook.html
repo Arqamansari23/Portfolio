@@ -1,0 +1,1056 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MedBook AI — Voice-First Clinic Booking | Arqam Ahmed Ansari</title>
+<meta name="description" content="A voice-first clinic booking platform: LiveKit Agents and Gemini Live driving 12 function tools, a React site and admin, and a PostgreSQL core where double-booking is impossible and every write reaches open calendars in 5ms.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/case.css">
+<style>
+  /* page-specific: constraints table + spoken dialogue */
+  .table-scroll{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); overflow-x:auto; margin:20px 0; }
+  .dtable{ width:100%; border-collapse:collapse; font-size:13.5px; min-width:620px; }
+  .dtable th{ text-align:left; font-size:10.5px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase; color:var(--muted-2); background:var(--bg); padding:11px 16px; border-bottom:1px solid var(--border); }
+  .dtable td{ padding:13px 16px; border-bottom:1px solid var(--border-soft); color:#3F4653; vertical-align:top; line-height:1.55; }
+  .dtable tr:last-child td{ border-bottom:none; }
+  .dtable td:first-child{ font-weight:600; color:var(--ink); width:30%; }
+  .dtable td:last-child{ width:32%; }
+  .dtable code{ font-family:'JetBrains Mono',monospace; font-size:11.5px; background:var(--purple-bg); color:#5B3FD6; padding:2px 6px; border-radius:5px; white-space:nowrap; }
+  .dialogue{ background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-md); padding:20px 22px; margin:20px 0; }
+  .dialogue div{ padding-left:15px; border-left:3px solid var(--border); margin-bottom:14px; }
+  .dialogue div:last-child{ margin-bottom:0; }
+  .dialogue .who{ display:block; font-size:10.5px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase; margin-bottom:3px; }
+  .dialogue p{ margin:0; font-size:15.5px; line-height:1.6; color:var(--ink); }
+  .dialogue .caller{ border-left-color:var(--blue-line); }
+  .dialogue .caller .who{ color:var(--blue); }
+  .dialogue .agent{ border-left-color:var(--purple-line); }
+  .dialogue .agent .who{ color:var(--purple); }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<nav class="doc-nav">
+  <div class="wrap">
+    <a class="back-link" href="../index.html#works">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Back to Portfolio
+    </a>
+    <div class="nav-actions">
+      <span class="nav-tag">Case Study</span>
+      <button class="toc-toggle" type="button" id="tocToggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Contents
+      </button>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-hero">
+  <div class="wrap">
+    <div class="kicker-row">
+      <span class="kicker k-purple">Voice AI</span>
+      <span class="kicker k-green">Realtime</span>
+      <span class="kicker k-blue">LiveKit · Gemini Live</span>
+    </div>
+    <h1>MedBook AI: Booking a Doctor by Talking to One Agent</h1>
+    <p class="standfirst">A clinic booking platform where patients book appointments by speaking to an AI receptionist — and where those bookings land on the staff calendar the instant they happen. A patient website and an admin dashboard sit on the same database, so the phone line, the website and the front desk can never double-book a doctor.</p>
+
+    <div class="hero-meta">
+      <div><span>My Role</span><b>AI Engineer — end-to-end</b></div>
+      <div><span>Core Stack</span><b>Python · LiveKit Agents · Gemini Live · PostgreSQL · FastAPI · React · Docker</b></div>
+      <div><span>Scale</span><b>~5,400 lines · 24 endpoints · 6 tables</b></div>
+    </div>
+
+    <div class="stat-strip">
+      <div class="stat-box"><b>12</b><span>Voice function tools</span></div>
+      <div class="stat-box"><b>5 ms</b><span>DB write → calendar pixel</span></div>
+      <div class="stat-box"><b>0.65 s</b><span>Tool result → agent speaking</span></div>
+      <div class="stat-box"><b>3</b><span>Services, one database</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="doc-body">
+
+  <aside class="toc" id="toc">
+    <h5>On this page</h5>
+    <a href="#problem" class="active">The problem</a>
+    <a href="#architecture">1 · Architecture</a>
+    <a href="#booking">2 · A booking end to end</a>
+    <a href="#data">3 · Data model</a>
+    <a href="#integrity">4 · Booking integrity</a>
+    <a href="#grounding">5 · Anti-hallucination</a>
+    <a href="#realtime">6 · Realtime fan-out</a>
+    <a href="#constraints">7 · Model constraints</a>
+    <a href="#testing">8 · Testing</a>
+    <a href="#limits">9 · Limits &amp; production</a>
+  </aside>
+
+  <article>
+
+    <!-- ================= PROBLEM ================= -->
+    <section id="problem">
+      <div class="sec-num">The Problem</div>
+      <h2>Three ways to book the same doctor, and one way to get it wrong</h2>
+      <p class="lead">A clinic takes bookings on the phone, through its website, and across the front desk. Each of those is a separate queue with its own idea of who is free. The failure mode is boring and constant: two people are booked into the same fifteen minutes, and someone finds out in the waiting room.</p>
+      <p>I wanted to see whether the phone line could stop being the slow, human-shaped path — whether a caller could describe a symptom in their own words and come away with a real appointment, while the front desk watched it appear on their screen. That meant three things had to be true at once: the agent must only ever speak facts that came out of the database, the database must make double-booking <em>impossible</em> rather than unlikely, and every screen in the building must agree within milliseconds.</p>
+
+      <h3>Talking to it like a receptionist</h3>
+      <div class="dialogue">
+        <div class="caller">
+          <span class="who">Caller</span>
+          <p>“I've had an itchy red rash on my arms for a week.”</p>
+        </div>
+        <div class="agent">
+          <span class="who">Agent</span>
+          <p>“That sounds like one for dermatology. Dr. Michael Chen treats acne and eczema, and he's free on Thursday at ten past ten. Shall I book that?”</p>
+        </div>
+      </div>
+      <p>The agent understands the symptom, maps it to the right department, checks live availability, takes a phone number, and writes the booking — in one continuous conversation, with no menus and no keypad input. Patients who prefer a screen get the same availability on the public site, and staff get a dashboard with one column per doctor, every slot marked free or booked and labelled with where the booking came from: voice agent, website, or reception.</p>
+
+      <div class="callout c-blue">
+        <b>The hard constraint</b>
+        A receptionist who invents a doctor is worse than no receptionist. Every name, time, room and price the agent says out loud has to be traceable to a tool call made in that same conversation.
+      </div>
+
+      <h3>From a sentence to a specialist</h3>
+      <p>Callers do not say “Cardiology”. They say “a heart doctor”, or describe a symptom, or the speech model mishears them entirely. Matching is done in SQL — trigram similarity over department and doctor names, plus a keyword array holding symptoms, job titles and common misspellings — so <code class="inline">cardiologist</code>, <code class="inline">heart doctor</code> and the mishearing <code class="inline">cardiologie</code> all land on the same department.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 350" role="img" aria-label="Symptom and phrasing matching: four different spoken phrasings all resolve through match_specializations to a department with a named doctor, while emergency wording is screened out to emergency services before any booking">
+            <defs>
+              <marker id="mb6-ar" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="mb6-rd" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#E05252"/></marker>
+            </defs>
+
+            <text class="dg-edge" x="20" y="28">WHAT THE CALLER ACTUALLY SAYS</text>
+
+            <rect x="20" y="38" width="236" height="32" rx="9" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-quote" x="138" y="58" text-anchor="middle">“I've had an itchy red rash”</text>
+            <rect x="20" y="82" width="236" height="32" rx="9" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-quote" x="138" y="102" text-anchor="middle">“I need a cardiologist”</text>
+            <rect x="20" y="126" width="236" height="32" rx="9" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-quote" x="138" y="146" text-anchor="middle">“a heart doctor”</text>
+            <rect x="20" y="170" width="236" height="32" rx="9" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-quote" x="138" y="190" text-anchor="middle">“cardiologie” — misheard</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb6-ar)">
+              <path d="M256 54h20v38h40"/>
+              <path d="M256 98h30v12h30"/>
+              <path d="M256 142h40v-14h20"/>
+              <path d="M256 186h50v-40h10"/>
+            </g>
+
+            <rect x="320" y="70" width="240" height="110" rx="14" fill="#2F7BF6"/>
+            <text class="dg-mono" x="440" y="97" text-anchor="middle" fill="#fff">match_specializations()</text>
+            <text class="dg-label" x="440" y="121" text-anchor="middle" opacity="0.82">trigram similarity + keyword</text>
+            <text class="dg-label" x="440" y="138" text-anchor="middle" opacity="0.82">array over symptoms, job</text>
+            <text class="dg-label" x="440" y="155" text-anchor="middle" opacity="0.82">titles and misspellings</text>
+
+            <path d="M560 125h40" stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb6-ar)"/>
+
+            <rect x="604" y="70" width="256" height="110" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="732" y="92" text-anchor="middle" fill="#0C6B42">Department + a real doctor</text>
+            <rect x="616" y="100" width="232" height="22" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="732" y="115" text-anchor="middle" fill="#1F2937">Dermatology · Dr. Michael Chen</text>
+            <rect x="616" y="128" width="232" height="22" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="732" y="143" text-anchor="middle" fill="#1F2937">Cardiology · Dr. Khan</text>
+            <text class="dg-small" x="732" y="167" text-anchor="middle">then available_slots() finds the next slot</text>
+
+            <rect x="20" y="238" width="236" height="44" rx="9" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-quote" x="138" y="257" text-anchor="middle" fill="#A63A3A">“sudden crushing chest pain”</text>
+            <text class="dg-small" x="138" y="273" text-anchor="middle" fill="#E05252">emergency wording</text>
+
+            <g stroke="#E05252" stroke-width="1.4" fill="none" marker-end="url(#mb6-rd)">
+              <path d="M256 260h58"/>
+              <path d="M560 260h38"/>
+            </g>
+
+            <rect x="320" y="238" width="240" height="44" rx="11" fill="#E05252"/>
+            <text class="dg-label" x="440" y="257" text-anchor="middle">Emergency screen</text>
+            <text class="dg-label" x="440" y="273" text-anchor="middle" opacity="0.82">runs before any booking</text>
+
+            <rect x="604" y="238" width="256" height="44" rx="11" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="732" y="257" text-anchor="middle" fill="#A63A3A">Referred to emergency services</text>
+            <text class="dg-small" x="732" y="273" text-anchor="middle" fill="#E05252">never booked · no medical advice</text>
+
+            <text class="dg-small" x="440" y="320" text-anchor="middle">The agent never diagnoses: it maps what it hears to a department, then to a named doctor and a real free slot.</text>
+          </svg>
+        </div>
+        <figcaption>Matching lives in SQL rather than in the prompt, so an unfamiliar phrasing degrades into a ranked list of real departments instead of an improvised answer.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ================= ARCHITECTURE ================= -->
+    <section id="architecture">
+      <div class="sec-num">01 · Architecture</div>
+      <h2>Three services, one database, no second source of truth</h2>
+      <p>The system is deliberately boring in shape: a voice agent, a web service, and PostgreSQL. What makes it work is that none of the three carries its own copy of the rules. The agent does not know when a doctor is free — it asks. The website does not decide whether a slot is bookable — the database does. Every booking path, however it started, converges on the same constraints and the same functions.</p>
+
+      <ul class="checks">
+        <li><strong>Voice agent (Python)</strong> — LiveKit Agents runs the session and turn-taking, Gemini Live handles speech in and speech out, and 12 function tools are the only way the model can touch data</li>
+        <li><strong>Web service (FastAPI + React)</strong> — one SPA serving the public site and the admin area, 24 REST endpoints behind it, and a WebSocket hub pushing live updates</li>
+        <li><strong>PostgreSQL</strong> — 6 tables, 5 SQL functions including <code class="inline">available_slots()</code> and <code class="inline">match_specializations()</code>, and a trigger that announces every change</li>
+      </ul>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 480" role="img" aria-label="System architecture: a caller reaches the Python voice agent built on LiveKit Agents and Gemini Live with 12 function tools, while an online patient and reception use the React SPA and REST API; both write to PostgreSQL, whose NOTIFY trigger sends appointment_change back to the WebSocket hub">
+            <defs>
+              <marker id="mb1-ar" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="mb1-gr" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#16A365"/></marker>
+              <marker id="mb1-pu" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#A78BFA"/></marker>
+            </defs>
+
+            <!-- actors -->
+            <rect x="225" y="40" width="166" height="30" rx="8" fill="#6B7180"/>
+            <text class="dg-label" x="308" y="59" text-anchor="middle">Caller · on the phone</text>
+            <rect x="477" y="40" width="166" height="30" rx="8" fill="#6B7180"/>
+            <text class="dg-label" x="560" y="59" text-anchor="middle">Patient · books online</text>
+            <rect x="662" y="40" width="166" height="30" rx="8" fill="#6B7180"/>
+            <text class="dg-label" x="745" y="59" text-anchor="middle">Reception · front desk</text>
+
+            <!-- voice agent panel -->
+            <rect x="20" y="100" width="390" height="178" rx="16" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <rect x="32" y="88" width="170" height="22" rx="11" fill="#2F7BF6"/>
+            <text class="dg-label" x="117" y="103" text-anchor="middle">Voice Agent · Python</text>
+
+            <rect x="32" y="126" width="168" height="50" rx="11" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-title" x="116" y="148" text-anchor="middle" fill="#1A4C9E">Gemini Live</text>
+            <text class="dg-small" x="116" y="164" text-anchor="middle" fill="#2F7BF6">speech in · speech out</text>
+
+            <rect x="224" y="126" width="168" height="50" rx="11" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-title" x="308" y="148" text-anchor="middle" fill="#1A4C9E">LiveKit Agents</text>
+            <text class="dg-small" x="308" y="164" text-anchor="middle" fill="#2F7BF6">session · turn taking</text>
+
+            <path d="M200 151h24" stroke="#9599A6" stroke-width="1.4" fill="none"/>
+            <path d="M308 176v16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb1-ar)"/>
+
+            <rect x="32" y="196" width="360" height="58" rx="11" fill="#2F7BF6"/>
+            <text class="dg-label" x="212" y="220" text-anchor="middle">12 function tools</text>
+            <text class="dg-label" x="212" y="238" text-anchor="middle" opacity="0.82">search · availability · book · reschedule · cancel</text>
+
+            <!-- web panel -->
+            <rect x="440" y="100" width="420" height="178" rx="16" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <rect x="452" y="88" width="214" height="22" rx="11" fill="#7C5CFC"/>
+            <text class="dg-label" x="559" y="103" text-anchor="middle">Web Service · FastAPI + React</text>
+
+            <rect x="664" y="126" width="184" height="50" rx="11" fill="#fff" stroke="#E1D9FF"/>
+            <text class="dg-title" x="756" y="148" text-anchor="middle" fill="#5B3FD6">React SPA</text>
+            <text class="dg-small" x="756" y="164" text-anchor="middle" fill="#7C5CFC">public site + admin</text>
+
+            <rect x="664" y="196" width="184" height="58" rx="11" fill="#7C5CFC"/>
+            <text class="dg-label" x="756" y="220" text-anchor="middle">WebSocket hub</text>
+            <text class="dg-label" x="756" y="238" text-anchor="middle" opacity="0.82">live updates → open tabs</text>
+
+            <rect x="452" y="160" width="190" height="58" rx="11" fill="#7C5CFC"/>
+            <text class="dg-label" x="547" y="184" text-anchor="middle">REST API</text>
+            <text class="dg-label" x="547" y="202" text-anchor="middle" opacity="0.82">24 endpoints</text>
+
+            <path d="M664 151h-10v38h-16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb1-ar)"/>
+            <path d="M756 196v-20" stroke="#A78BFA" stroke-width="1.4" fill="none" stroke-dasharray="5 3" marker-end="url(#mb1-pu)"/>
+
+            <!-- actors into the two services (drawn last so the heads sit above the panels) -->
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb1-ar)">
+              <path d="M308 70v52"/>
+              <path d="M560 70v10h176v42"/>
+              <path d="M745 70v10h35v42"/>
+            </g>
+
+            <!-- database panel -->
+            <rect x="20" y="330" width="840" height="130" rx="16" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <rect x="32" y="318" width="130" height="22" rx="11" fill="#16A365"/>
+            <text class="dg-label" x="97" y="333" text-anchor="middle">PostgreSQL</text>
+
+            <rect x="52" y="360" width="210" height="76" rx="11" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-title" x="157" y="382" text-anchor="middle" fill="#0C6B42">5 SQL functions</text>
+            <text class="dg-mono" x="157" y="403" text-anchor="middle" fill="#1F2937">available_slots()</text>
+            <text class="dg-mono" x="157" y="421" text-anchor="middle" fill="#1F2937">match_specializations()</text>
+
+            <rect x="302" y="360" width="230" height="76" rx="11" fill="#10141F"/>
+            <text class="dg-label" x="417" y="382" text-anchor="middle">6 tables</text>
+            <text class="dg-label" x="417" y="400" text-anchor="middle" opacity="0.75">doctors · schedules · time off</text>
+            <text class="dg-label" x="417" y="418" text-anchor="middle" opacity="0.75">patients · appointments</text>
+
+            <rect x="572" y="360" width="236" height="76" rx="11" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-title" x="690" y="382" text-anchor="middle" fill="#0C6B42">NOTIFY trigger</text>
+            <text class="dg-small" x="690" y="403" text-anchor="middle">AFTER INSERT / UPDATE / DELETE</text>
+            <text class="dg-small" x="690" y="419" text-anchor="middle">on appointments</text>
+
+            <path d="M262 398h40" stroke="#9599A6" stroke-width="1.4" fill="none"/>
+            <path d="M532 398h40" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb1-ar)"/>
+
+            <!-- writes into the database -->
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb1-ar)">
+              <path d="M212 254v56h158v50"/>
+              <path d="M547 218v104h-83v38"/>
+            </g>
+            <rect x="182" y="274" width="62" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="213" y="286" text-anchor="middle">tool calls</text>
+            <rect x="514" y="240" width="66" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="547" y="252" text-anchor="middle">REST writes</text>
+
+            <!-- notification back to the hub -->
+            <path d="M690 360v-70h66v-36" stroke="#16A365" stroke-width="1.4" fill="none" stroke-dasharray="5 3" marker-end="url(#mb1-gr)"/>
+            <rect x="637" y="302" width="106" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="690" y="314" text-anchor="middle" fill="#0C6B42">appointment_change</text>
+          </svg>
+        </div>
+        <figcaption>Two write paths, one set of rules. The database answers back over a single notification channel, so the WebSocket hub never has to be told what changed by the code that changed it.</figcaption>
+      </figure>
+
+      <div class="callout c-green">
+        <b>Why the agent gets no shortcuts</b>
+        The voice agent talks to PostgreSQL through the same functions and constraints the website uses. There is no “agent fast path”, which means a bug in the agent can produce a bad conversation but not a bad calendar.
+      </div>
+    </section>
+
+    <!-- ================= BOOKING ================= -->
+    <section id="booking">
+      <div class="sec-num">02 · A booking end to end</div>
+      <h2>How a spoken sentence becomes a row, and then a pixel</h2>
+      <p class="lead">The interesting part of a voice booking is not the speech. It is everything that has to be true between “yes, book it” and the moment a receptionist across the building sees the slot fill in without touching anything.</p>
+      <p>Below is a full call, from the caller's first sentence to the confirmation. Two details are worth watching: the agent collects a phone number <em>before</em> it writes anything, so a booking always belongs to an identifiable patient; and the notification that reaches the staff calendar comes from the database itself, not from the agent.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 900 730" role="img" aria-label="Sequence diagram of a voice booking: the caller asks for a cardiologist, the agent searches the database, offers a slot, collects a phone number and name, calls book_appointment, the exclusion constraint verifies the slot, the row is inserted, NOTIFY appointment_change reaches the WebSocket hub which pushes to the staff calendar in five milliseconds, and the agent confirms">
+            <defs>
+              <marker id="mb2-a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#6B7180"/></marker>
+              <marker id="mb2-b" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#A9AEBB"/></marker>
+            </defs>
+
+            <!-- participants -->
+            <rect x="18" y="14" width="124" height="32" rx="9" fill="#6B7180"/>
+            <text class="dg-label" x="80" y="34" text-anchor="middle">Caller</text>
+            <rect x="228" y="14" width="144" height="32" rx="9" fill="#10141F"/>
+            <text class="dg-label" x="300" y="34" text-anchor="middle">Voice Agent</text>
+            <rect x="438" y="14" width="144" height="32" rx="9" fill="#16A365"/>
+            <text class="dg-label" x="510" y="34" text-anchor="middle">PostgreSQL</text>
+            <rect x="606" y="14" width="148" height="32" rx="9" fill="#7C5CFC"/>
+            <text class="dg-label" x="680" y="34" text-anchor="middle">WebSocket Hub</text>
+            <rect x="762" y="14" width="134" height="32" rx="9" fill="#F2994A"/>
+            <text class="dg-label" x="829" y="34" text-anchor="middle">Staff Calendar</text>
+
+            <!-- lifelines -->
+            <g stroke="#D8DBE4" stroke-width="1.2" stroke-dasharray="4 4">
+              <path d="M80 46v666"/><path d="M300 46v666"/><path d="M510 46v666"/><path d="M680 46v666"/><path d="M829 46v666"/>
+            </g>
+
+            <!-- note: staff watching -->
+            <rect x="760" y="58" width="138" height="26" rx="8" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-small" x="829" y="75" text-anchor="middle" fill="#9A5A17">watching today's grid</text>
+
+            <!-- solid request arrows -->
+            <g stroke="#6B7180" stroke-width="1.4" fill="none" marker-end="url(#mb2-a)">
+              <path d="M102 104h192"/>
+              <path d="M322 134h182"/>
+              <path d="M102 220h192"/>
+              <path d="M102 276h192"/>
+              <path d="M322 306h182"/>
+              <path d="M102 390h192"/>
+              <path d="M322 418h182"/>
+              <path d="M322 448h182"/>
+              <path d="M518 509h50v22h-48"/>
+            </g>
+
+            <!-- dashed reply arrows -->
+            <g stroke="#A9AEBB" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#mb2-b)">
+              <path d="M488 162H306"/>
+              <path d="M278 192H86"/>
+              <path d="M278 248H86"/>
+              <path d="M488 334H306"/>
+              <path d="M278 362H86"/>
+              <path d="M532 562h142"/>
+              <path d="M702 590h121"/>
+              <path d="M488 664H306"/>
+              <path d="M278 692H86"/>
+            </g>
+
+            <!-- numbered badges -->
+            <g>
+              <circle cx="92" cy="104" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="92" y="107" text-anchor="middle" fill="#fff">1</text>
+              <circle cx="312" cy="134" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="312" y="137" text-anchor="middle" fill="#fff">2</text>
+              <circle cx="498" cy="162" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="498" y="165" text-anchor="middle" fill="#fff">3</text>
+              <circle cx="288" cy="192" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="288" y="195" text-anchor="middle" fill="#fff">4</text>
+              <circle cx="92" cy="220" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="92" y="223" text-anchor="middle" fill="#fff">5</text>
+              <circle cx="288" cy="248" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="288" y="251" text-anchor="middle" fill="#fff">6</text>
+              <circle cx="92" cy="276" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="92" y="279" text-anchor="middle" fill="#fff">7</text>
+              <circle cx="312" cy="306" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="312" y="309" text-anchor="middle" fill="#fff">8</text>
+              <circle cx="498" cy="334" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="498" y="337" text-anchor="middle" fill="#fff">9</text>
+              <circle cx="288" cy="362" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="288" y="365" text-anchor="middle" fill="#fff">10</text>
+              <circle cx="92" cy="390" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="92" y="393" text-anchor="middle" fill="#fff">11</text>
+              <circle cx="312" cy="418" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="312" y="421" text-anchor="middle" fill="#fff">12</text>
+              <circle cx="312" cy="448" r="8.5" fill="#E05252"/><text class="dg-edge" x="312" y="451" text-anchor="middle" fill="#fff">13</text>
+              <circle cx="494" cy="521" r="8.5" fill="#E05252"/><text class="dg-edge" x="494" y="524" text-anchor="middle" fill="#fff">14</text>
+              <circle cx="522" cy="562" r="8.5" fill="#16A365"/><text class="dg-edge" x="522" y="565" text-anchor="middle" fill="#fff">15</text>
+              <circle cx="692" cy="590" r="8.5" fill="#16A365"/><text class="dg-edge" x="692" y="593" text-anchor="middle" fill="#fff">16</text>
+              <circle cx="498" cy="664" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="498" y="667" text-anchor="middle" fill="#fff">17</text>
+              <circle cx="288" cy="692" r="8.5" fill="#7C5CFC"/><text class="dg-edge" x="288" y="695" text-anchor="middle" fill="#fff">18</text>
+            </g>
+
+            <!-- message labels -->
+            <text class="dg-quote" x="190" y="97" text-anchor="middle">“I need a cardiologist”</text>
+            <text class="dg-mono" x="405" y="124" text-anchor="middle" fill="#1F2937">search_doctors("cardiologist")</text>
+            <text class="dg-small" x="405" y="155" text-anchor="middle">Dr. Khan · next free slot</text>
+            <text class="dg-quote" x="190" y="185" text-anchor="middle">“Dr. Khan is free Wednesday at 9”</text>
+            <text class="dg-quote" x="190" y="213" text-anchor="middle">“Yes, book it”</text>
+            <text class="dg-quote" x="190" y="241" text-anchor="middle">“What's the best number for you?”</text>
+            <text class="dg-quote" x="190" y="269" text-anchor="middle">“07700 900456”</text>
+            <text class="dg-mono" x="405" y="296" text-anchor="middle" fill="#1F2937">identify_patient(phone)</text>
+            <text class="dg-small" x="405" y="327" text-anchor="middle">new patient → needs a name</text>
+            <text class="dg-quote" x="190" y="355" text-anchor="middle">“And your full name?”</text>
+            <text class="dg-quote" x="190" y="383" text-anchor="middle">“Diana Prince”</text>
+            <text class="dg-mono" x="405" y="408" text-anchor="middle" fill="#1F2937">identify_patient(phone, name)</text>
+            <text class="dg-mono" x="405" y="438" text-anchor="middle" fill="#A63A3A">book_appointment()</text>
+            <text class="dg-mono" x="574" y="527" fill="#1F2937">INSERT appointment</text>
+            <text class="dg-mono" x="612" y="554" text-anchor="middle" fill="#0C6B42">NOTIFY appointment_change</text>
+            <text class="dg-small" x="754" y="583" text-anchor="middle" fill="#16A365">push update</text>
+            <text class="dg-small" x="405" y="657" text-anchor="middle">confirmed</text>
+            <text class="dg-quote" x="190" y="685" text-anchor="middle">“Booked — room 201, arrive ten minutes early”</text>
+
+            <!-- note: exclusion constraint -->
+            <rect x="418" y="464" width="184" height="40" rx="8" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-small" x="510" y="481" text-anchor="middle" fill="#9A5A17">exclusion constraint verifies</text>
+            <text class="dg-small" x="510" y="495" text-anchor="middle" fill="#9A5A17">the slot is still free</text>
+
+            <!-- note: 5ms -->
+            <rect x="744" y="606" width="154" height="40" rx="8" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-small" x="821" y="623" text-anchor="middle" fill="#0C6B42">slot fills in — no refresh</text>
+            <text class="dg-title" x="821" y="638" text-anchor="middle" fill="#0C6B42">5 ms write → pixel</text>
+          </svg>
+        </div>
+        <figcaption>Steps 13 to 16 are the whole argument: the constraint decides, the insert happens, and the notification fans out from the database — so the calendar is not trusting the agent's word for it.</figcaption>
+      </figure>
+
+      <p>The same shape holds for a cancellation. The agent calls the cancel tool, the row's status changes, the trigger fires, and the freed slot reappears on the staff grid just as fast.</p>
+    </section>
+
+    <!-- ================= DATA MODEL ================= -->
+    <section id="data">
+      <div class="sec-num">03 · Data model</div>
+      <h2>Six tables, and the one thing that deliberately isn't a table</h2>
+      <p>The schema is small on purpose. Specializations own doctors; doctors own a weekly schedule and a leave calendar; patients and doctors meet in appointments. Every appointment records <code class="inline">booked_via</code>, so the front desk can always see whether a slot came from the phone line, the website or their own colleague.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 900 520" role="img" aria-label="Entity relationship diagram: specializations employ doctors; doctors have weekly schedules, time off and appointments; patients book appointments; free slots are derived by available_slots from the weekly schedule minus leave minus booked appointments">
+            <defs>
+              <marker id="mb3-ar" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <!-- specializations -->
+            <rect x="20" y="40" width="230" height="112" rx="11" fill="#fff" stroke="#E1D9FF"/>
+            <rect x="20" y="40" width="230" height="26" rx="11" fill="#7C5CFC"/>
+            <rect x="20" y="53" width="230" height="13" fill="#7C5CFC"/>
+            <text class="dg-mono" x="32" y="58" fill="#fff">specializations</text>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="32" y="86">name              text</text>
+              <text x="32" y="103">description       text</text>
+              <text x="32" y="120">keywords          text[]</text>
+            </g>
+            <text class="dg-small" x="32" y="140">keywords = symptoms + job titles</text>
+
+            <!-- doctors -->
+            <rect x="330" y="40" width="230" height="112" rx="11" fill="#fff" stroke="#D6E7FF"/>
+            <rect x="330" y="40" width="230" height="26" rx="11" fill="#2F7BF6"/>
+            <rect x="330" y="53" width="230" height="13" fill="#2F7BF6"/>
+            <text class="dg-mono" x="342" y="58" fill="#fff">doctors</text>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="342" y="86">full_name         text</text>
+              <text x="342" y="103">qualifications    text</text>
+              <text x="342" y="120">years_experience  int</text>
+              <text x="342" y="137">consultation_fee  numeric</text>
+            </g>
+
+            <!-- patients -->
+            <rect x="640" y="40" width="240" height="112" rx="11" fill="#fff" stroke="#CFF3E1"/>
+            <rect x="640" y="40" width="240" height="26" rx="11" fill="#16A365"/>
+            <rect x="640" y="53" width="240" height="13" fill="#16A365"/>
+            <text class="dg-mono" x="652" y="58" fill="#fff">patients</text>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="652" y="86">full_name       text</text>
+              <text x="652" y="103">phone           text (UK)</text>
+              <text x="652" y="120">date_of_birth   date</text>
+            </g>
+            <text class="dg-small" x="652" y="140">phone is the lookup key</text>
+
+            <!-- doctor_schedules -->
+            <rect x="20" y="246" width="230" height="112" rx="11" fill="#fff" stroke="#D6E7FF"/>
+            <rect x="20" y="246" width="230" height="26" rx="11" fill="#2F7BF6"/>
+            <rect x="20" y="259" width="230" height="13" fill="#2F7BF6"/>
+            <text class="dg-mono" x="32" y="264" fill="#fff">doctor_schedules</text>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="32" y="292">day_of_week    smallint 1-7</text>
+              <text x="32" y="309">start_time     time</text>
+              <text x="32" y="326">end_time       time</text>
+              <text x="32" y="343">slot_minutes   smallint</text>
+            </g>
+
+            <!-- doctor_time_off -->
+            <rect x="330" y="278" width="230" height="95" rx="11" fill="#fff" stroke="#FFE0C2"/>
+            <rect x="330" y="278" width="230" height="26" rx="11" fill="#F2994A"/>
+            <rect x="330" y="291" width="230" height="13" fill="#F2994A"/>
+            <text class="dg-mono" x="342" y="296" fill="#fff">doctor_time_off</text>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="342" y="324">start_date   date</text>
+              <text x="342" y="341">end_date     date</text>
+              <text x="342" y="358">reason       text</text>
+            </g>
+
+            <!-- appointments -->
+            <rect x="640" y="246" width="240" height="130" rx="11" fill="#fff" stroke="#D3D7E0"/>
+            <rect x="640" y="246" width="240" height="26" rx="11" fill="#10141F"/>
+            <rect x="640" y="259" width="240" height="13" fill="#10141F"/>
+            <text class="dg-mono" x="652" y="264" fill="#fff">appointments</text>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="652" y="292">starts_at    timestamp</text>
+              <text x="652" y="309">ends_at      timestamp</text>
+              <text x="652" y="326">status       enum</text>
+              <text x="652" y="343">booked_via   text</text>
+            </g>
+            <text class="dg-small" x="652" y="363">voice_agent | website | reception</text>
+
+            <!-- relationships -->
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb3-ar)">
+              <path d="M250 96h74"/>
+              <path d="M400 152v46H135v48"/>
+              <path d="M445 152v126"/>
+              <path d="M490 152v56h210v38"/>
+              <path d="M820 152v94"/>
+            </g>
+
+            <rect x="258" y="80" width="64" height="15" rx="7" fill="#fff"/>
+            <text class="dg-edge" x="290" y="92" text-anchor="middle">employs</text>
+            <rect x="200" y="190" width="104" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="252" y="202" text-anchor="middle">works weekly hours</text>
+            <rect x="414" y="216" width="66" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="447" y="228" text-anchor="middle">takes leave</text>
+            <rect x="606" y="200" width="54" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="633" y="212" text-anchor="middle">attends</text>
+            <rect x="792" y="188" width="50" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="817" y="200" text-anchor="middle">books</text>
+
+            <g class="dg-edge" fill="#6B7180">
+              <text x="258" y="112">1</text><text x="316" y="112">N</text>
+              <text x="390" y="168">1</text><text x="146" y="238">N</text>
+              <text x="456" y="170">1</text><text x="456" y="268">N</text>
+              <text x="500" y="170">1</text><text x="688" y="238">N</text>
+              <text x="832" y="170">1</text><text x="832" y="238">N</text>
+            </g>
+
+            <!-- derived availability callout -->
+            <rect x="20" y="408" width="860" height="96" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="40" y="432" fill="#0C6B42">Free slots are not a table — they are derived on every read</text>
+
+            <rect x="40" y="444" width="152" height="26" rx="8" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="116" y="461" text-anchor="middle" fill="#1F2937">doctor_schedules</text>
+            <text class="dg-title" x="204" y="462" fill="#0C6B42">−</text>
+            <rect x="216" y="444" width="146" height="26" rx="8" fill="#fff" stroke="#FFE0C2"/>
+            <text class="dg-mono" x="289" y="461" text-anchor="middle" fill="#1F2937">doctor_time_off</text>
+            <text class="dg-title" x="374" y="462" fill="#0C6B42">−</text>
+            <rect x="386" y="444" width="178" height="26" rx="8" fill="#fff" stroke="#D3D7E0"/>
+            <text class="dg-mono" x="475" y="461" text-anchor="middle" fill="#1F2937">booked appointments</text>
+            <text class="dg-title" x="578" y="462" fill="#0C6B42">=</text>
+            <rect x="592" y="444" width="228" height="26" rx="8" fill="#16A365"/>
+            <text class="dg-mono" x="706" y="461" text-anchor="middle" fill="#fff">available_slots(doctor, date)</text>
+
+            <text class="dg-small" x="450" y="490" text-anchor="middle">so availability can never drift out of sync with the schedule, the leave calendar or the bookings</text>
+          </svg>
+        </div>
+        <figcaption>The only place a free slot exists is in the result of a function call. There is nothing to invalidate, nothing to re-materialise, and no cache to go stale after someone books.</figcaption>
+      </figure>
+
+      <h3>Availability as a function, not a record</h3>
+      <p>The obvious design is a <code class="inline">slots</code> table that gets pre-generated and then marked as taken. It is also the design that eventually shows a slot that no longer exists, because something wrote to the schedule, the leave calendar or the appointments table without regenerating it. Deriving availability in SQL means the question “is Dr. Khan free on Wednesday at nine?” is answered from the same three sources every time, by everyone.</p>
+      <p>The voice tools are thin wrappers over exactly that. A tool takes plain arguments, calls a function, and returns structured facts — it never composes a sentence, because the sentence is the model's job and the facts are the database's.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> agent/tools.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── A LiveKit function tool: plain arguments, structured facts ───────
+from livekit.agents import function_tool, RunContext
+
+
+@function_tool()
+async def search_doctors(
+    context: RunContext,
+    query: str,
+    preferred_date: str | None = None,
+) -&gt; dict:
+    '''Find doctors for a symptom, a department or a job title.
+
+    Use for anything the caller says about who they want to see:
+    "a heart doctor", "cardiologist", "an itchy rash".
+    Never answer from memory - always call this first.
+    '''
+    async with db.acquire() as conn:
+        # trigram + keyword match, ranked; returns real departments
+        depts = await conn.fetch(
+            'SELECT * FROM match_specializations($1) LIMIT 3', query
+        )
+        if not depts:
+            # never a bare error: tell the agent what the clinic HAS
+            return {'matched': False, 'departments': await list_departments(conn)}
+
+        doctors = await conn.fetch(
+            '''SELECT d.id, d.full_name, s.name AS department,
+                      d.qualifications, d.consultation_fee
+                 FROM doctors d
+                 JOIN specializations s ON s.id = d.specialization_id
+                WHERE s.id = ANY($1::int[])''',
+            [d['id'] for d in depts]
+        )
+
+        # next free slot per doctor, derived - never read from a table
+        for doc in doctors:
+            doc['next_slots'] = await conn.fetch(
+                'SELECT * FROM available_slots($1, $2) LIMIT 3',
+                doc['id'], preferred_date or date.today()
+            )
+
+    return {'matched': True, 'doctors': [dict(d) for d in doctors]}</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= INTEGRITY ================= -->
+    <section id="integrity">
+      <div class="sec-num">04 · Booking integrity</div>
+      <h2>Double-booking is impossible, not merely unlikely</h2>
+      <p class="lead">Three independent writers — the phone, the website and the front desk — can target the same slot in the same millisecond. Guarding that in application code means writing the same check three times and hoping all three stay correct forever.</p>
+      <p>So the rule does not live in application code. It lives in PostgreSQL as an exclusion constraint: no two <em>scheduled</em> appointments for the same doctor may have overlapping time ranges. The database is not asked to be polite about it; the second writer simply cannot commit.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> db/schema.sql</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code>CONSTRAINT no_doctor_overlap EXCLUDE USING gist (
+    doctor_id WITH =,
+    tsrange(starts_at, ends_at) WITH &amp;&amp;
+) WHERE (status = 'scheduled')</code></pre>
+      </div>
+
+      <p>A second constraint of the same shape stops one patient being in two places at once. Losing writers get a clean, specific error rather than a corrupted calendar — and the agent turns that error into the only sensible sentence: <em>“That slot was just taken — the next one is at half past.”</em></p>
+
+      <div class="callout c-green">
+        <b>Proven by test, not assumed</b>
+        Two concurrent booking attempts on the same slot were run against real Postgres. One commits, one is rejected, and the rejected caller is offered another time. The constraint is the test's subject, not its scaffolding.
+      </div>
+
+      <h3>Why the failure path matters more than the happy path</h3>
+      <p>A booking tool that can only succeed produces an agent that cannot handle being wrong. Every write tool returns the reason it failed in a form the model can act on — slot taken, doctor on leave, time in the past, appointment belongs to someone else — so the conversation continues instead of stalling on an apology. The tests cover exactly those cases: double booking, booking in the past, and cancelling an appointment that is not yours.</p>
+    </section>
+
+    <!-- ================= GROUNDING ================= -->
+    <section id="grounding">
+      <div class="sec-num">05 · Anti-hallucination</div>
+      <h2>The time the agent invented a doctor</h2>
+      <p class="lead">An early version told a caller “we have no cardiologist”. When the caller pushed back, it invented a doctor's name — and then read another doctor's real availability under it.</p>
+      <p>That is the worst possible failure for this product, and it was not one bug. It was a chain of three, each harmless on its own. A brittle search never matched the word “cardiologist” to the department “Cardiology”. The failed lookup returned an error carrying no facts at all. And the department listing tool returned department names without the doctors inside them. By the time the model was pressed for a name, nothing in its context contradicted making one up.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 470" role="img" aria-label="Anti-hallucination chain: three causes — brittle search, an empty error response and department listings without names — combined to let the agent invent a doctor; four fixes remove every opportunity to guess and the result is regression-tested with an LLM judge">
+            <defs>
+              <marker id="mb5-ar" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="20" y="14" width="136" height="24" rx="12" fill="#E05252"/>
+            <text class="dg-label" x="88" y="30" text-anchor="middle">The failure</text>
+
+            <rect x="20" y="52" width="270" height="70" rx="12" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="155" y="75" text-anchor="middle" fill="#A63A3A">Brittle search</text>
+            <text class="dg-small" x="155" y="93" text-anchor="middle" fill="#8A5252">“cardiologist” never matched</text>
+            <text class="dg-small" x="155" y="109" text-anchor="middle" fill="#8A5252">the Cardiology department</text>
+
+            <rect x="306" y="52" width="268" height="70" rx="12" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="440" y="75" text-anchor="middle" fill="#A63A3A">Empty error response</text>
+            <text class="dg-small" x="440" y="93" text-anchor="middle" fill="#8A5252">a failed lookup returned</text>
+            <text class="dg-small" x="440" y="109" text-anchor="middle" fill="#8A5252">an apology with no facts</text>
+
+            <rect x="592" y="52" width="268" height="70" rx="12" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="726" y="75" text-anchor="middle" fill="#A63A3A">Departments without names</text>
+            <text class="dg-small" x="726" y="93" text-anchor="middle" fill="#8A5252">listings returned department</text>
+            <text class="dg-small" x="726" y="109" text-anchor="middle" fill="#8A5252">names but no doctor names</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M155 122v22"/><path d="M726 122v22"/><path d="M155 144h571"/>
+            </g>
+            <path d="M440 122v46" stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb5-ar)"/>
+
+            <rect x="210" y="168" width="460" height="48" rx="12" fill="#E05252"/>
+            <text class="dg-label" x="440" y="190" text-anchor="middle">The agent invented a doctor's name</text>
+            <text class="dg-label" x="440" y="207" text-anchor="middle" opacity="0.84">and read another doctor's real availability under it</text>
+
+            <path d="M440 216v34" stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb5-ar)"/>
+            <text class="dg-edge" x="452" y="240">fix: remove every opportunity to guess</text>
+
+            <rect x="20" y="232" width="112" height="24" rx="12" fill="#16A365"/>
+            <text class="dg-label" x="76" y="248" text-anchor="middle">The fix</text>
+
+            <!-- fix 1 -->
+            <rect x="20" y="258" width="206" height="96" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <circle cx="42" cy="282" r="10" fill="#16A365"/>
+            <text class="dg-edge" x="42" y="285" text-anchor="middle" fill="#fff">1</text>
+            <text class="dg-title" x="60" y="286" fill="#0C6B42">Fuzzy matching</text>
+            <text class="dg-small" x="123" y="312" text-anchor="middle">trigram + keyword search:</text>
+            <text class="dg-small" x="123" y="326" text-anchor="middle">“heart doctor” and even the</text>
+            <text class="dg-small" x="123" y="340" text-anchor="middle">mishearing “cardiologie” hit</text>
+
+            <!-- fix 2 -->
+            <rect x="238" y="258" width="206" height="96" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <circle cx="260" cy="282" r="10" fill="#16A365"/>
+            <text class="dg-edge" x="260" y="285" text-anchor="middle" fill="#fff">2</text>
+            <text class="dg-title" x="278" y="286" fill="#0C6B42">No bare errors</text>
+            <text class="dg-small" x="341" y="312" text-anchor="middle">a failed search returns what</text>
+            <text class="dg-small" x="341" y="326" text-anchor="middle">the clinic does have, never</text>
+            <text class="dg-small" x="341" y="340" text-anchor="middle">an empty apology</text>
+
+            <!-- fix 3 -->
+            <rect x="456" y="258" width="206" height="96" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <circle cx="478" cy="282" r="10" fill="#16A365"/>
+            <text class="dg-edge" x="478" y="285" text-anchor="middle" fill="#fff">3</text>
+            <text class="dg-title" x="496" y="286" fill="#0C6B42">Always real names</text>
+            <text class="dg-small" x="559" y="312" text-anchor="middle">department listings always</text>
+            <text class="dg-small" x="559" y="326" text-anchor="middle">carry the real doctor names</text>
+            <text class="dg-small" x="559" y="340" text-anchor="middle">behind them</text>
+
+            <!-- fix 4 -->
+            <rect x="674" y="258" width="206" height="96" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <circle cx="696" cy="282" r="10" fill="#16A365"/>
+            <text class="dg-edge" x="696" y="285" text-anchor="middle" fill="#fff">4</text>
+            <text class="dg-title" x="714" y="286" fill="#0C6B42">Grounding rule</text>
+            <text class="dg-small" x="777" y="312" text-anchor="middle">every name, time, room and</text>
+            <text class="dg-small" x="777" y="326" text-anchor="middle">price must come from a tool</text>
+            <text class="dg-small" x="777" y="340" text-anchor="middle">result in this call</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M123 354v22"/><path d="M341 354v22"/><path d="M559 354v22"/><path d="M777 354v22"/>
+              <path d="M123 376h654"/>
+            </g>
+            <path d="M440 376v24" stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb5-ar)"/>
+
+            <rect x="170" y="400" width="440" height="52" rx="12" fill="#16A365"/>
+            <text class="dg-label" x="390" y="424" text-anchor="middle">Every name, time and price traces to a tool result</text>
+            <text class="dg-label" x="390" y="441" text-anchor="middle" opacity="0.84">Regression-tested with an LLM judge</text>
+
+            <rect x="620" y="400" width="260" height="52" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="750" y="420" text-anchor="middle" fill="#5B3FD6">Hardest judge case</text>
+            <text class="dg-small" x="750" y="437" text-anchor="middle" fill="#7C5CFC">the caller insists the invented doctor exists</text>
+          </svg>
+        </div>
+        <figcaption>Each fix on its own is small. Together they close every route by which the model could produce a fact that no tool returned — which is the only definition of “grounded” that survives a caller who pushes back.</figcaption>
+      </figure>
+
+      <div class="callout c-orange">
+        <b>The rule that does the work</b>
+        A failed search must never return a bare error. It returns what the clinic <em>does</em> have — real departments, real doctors — so the model's next best move is to offer a real alternative rather than to fill the silence.
+      </div>
+
+      <p>The regression test is the incident itself, replayed: the judge scenario has the caller assert that the invented doctor exists and demand a booking with them. The agent is expected to hold its ground and offer the real list instead.</p>
+    </section>
+
+    <!-- ================= REALTIME ================= -->
+    <section id="realtime">
+      <div class="sec-num">06 · Realtime fan-out</div>
+      <h2>Realtime that doesn't care who made the change</h2>
+      <p class="lead">The tempting way to build a live calendar is to push an update from the API handler that just wrote the row. It works right up until a second writer appears — and here there are at least four.</p>
+      <p>So the live feed is driven by the database, not by handlers. An <code class="inline">AFTER INSERT / UPDATE / DELETE</code> trigger on <code class="inline">appointments</code> calls <code class="inline">pg_notify</code>; the API holds one long-lived <code class="inline">LISTEN</code> connection; and every notification is fanned out over WebSockets to every open tab. A booking made by voice, by the website, by reception, or by someone typing into <code class="inline">psql</code> produces exactly the same event.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 425" role="img" aria-label="Realtime fan-out: the voice agent, website, reception and a manual psql write all write to the appointments table; an AFTER INSERT UPDATE DELETE trigger calls pg_notify, the API LISTEN connection receives it, and a WebSocket fan-out pushes to every open calendar and dashboard tab">
+            <defs>
+              <marker id="mb4-ar" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <text class="dg-edge" x="20" y="44">ANY WRITER</text>
+
+            <rect x="20" y="60" width="150" height="34" rx="9" fill="#2F7BF6"/>
+            <text class="dg-label" x="95" y="81" text-anchor="middle">Voice agent</text>
+            <rect x="20" y="106" width="150" height="34" rx="9" fill="#7C5CFC"/>
+            <text class="dg-label" x="95" y="127" text-anchor="middle">Website</text>
+            <rect x="20" y="152" width="150" height="34" rx="9" fill="#F2994A"/>
+            <text class="dg-label" x="95" y="173" text-anchor="middle">Reception</text>
+            <rect x="20" y="198" width="150" height="34" rx="9" fill="#6B7180"/>
+            <text class="dg-label" x="95" y="219" text-anchor="middle">A manual psql write</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb4-ar)">
+              <path d="M170 77h12v47h28"/>
+              <path d="M170 123h20v17h20"/>
+              <path d="M170 169h28v-13h12"/>
+              <path d="M170 215h36v-43h4"/>
+            </g>
+
+            <rect x="214" y="110" width="170" height="76" rx="14" fill="#10141F"/>
+            <text class="dg-mono" x="299" y="142" text-anchor="middle" fill="#fff">appointments</text>
+            <text class="dg-label" x="299" y="162" text-anchor="middle" opacity="0.75">one table, one rule</text>
+
+            <path d="M384 148h60" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb4-ar)"/>
+            <rect x="386" y="130" width="58" height="15" rx="7" fill="#fff"/>
+            <text class="dg-edge" x="415" y="142" text-anchor="middle">any write</text>
+
+            <rect x="450" y="120" width="180" height="56" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="540" y="143" text-anchor="middle" fill="#0C6B42">Row trigger</text>
+            <text class="dg-small" x="540" y="160" text-anchor="middle">AFTER INSERT / UPDATE / DELETE</text>
+
+            <path d="M630 148h52" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb4-ar)"/>
+            <rect x="634" y="130" width="46" height="15" rx="7" fill="#fff"/>
+            <text class="dg-edge" x="657" y="142" text-anchor="middle">emits</text>
+
+            <rect x="682" y="120" width="180" height="56" rx="12" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-mono" x="772" y="143" text-anchor="middle" fill="#9A5A17">pg_notify(...)</text>
+            <text class="dg-small" x="772" y="160" text-anchor="middle" fill="#9A5A17">channel: appointment_change</text>
+
+            <path d="M772 176v38" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb4-ar)"/>
+
+            <rect x="682" y="214" width="180" height="56" rx="12" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="772" y="237" text-anchor="middle" fill="#1A4C9E">API LISTEN connection</text>
+            <text class="dg-small" x="772" y="254" text-anchor="middle" fill="#2F7BF6">one long-lived session</text>
+
+            <path d="M682 242H586" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#mb4-ar)"/>
+            <rect x="602" y="234" width="62" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="633" y="246" text-anchor="middle">one message</text>
+
+            <rect x="380" y="214" width="200" height="56" rx="12" fill="#7C5CFC"/>
+            <text class="dg-label" x="480" y="237" text-anchor="middle">WebSocket fan-out</text>
+            <text class="dg-label" x="480" y="254" text-anchor="middle" opacity="0.82">to every connected tab</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M480 270v28"/>
+              <path d="M123 298h654"/>
+            </g>
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#mb4-ar)">
+              <path d="M123 298v22"/><path d="M450 298v22"/><path d="M777 298v22"/>
+            </g>
+
+            <rect x="38" y="320" width="170" height="36" rx="10" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-title" x="123" y="343" text-anchor="middle" fill="#3F4653">Staff calendar tab</text>
+            <rect x="365" y="320" width="170" height="36" rx="10" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-title" x="450" y="343" text-anchor="middle" fill="#3F4653">Admin dashboard tab</text>
+            <rect x="692" y="320" width="170" height="36" rx="10" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-title" x="777" y="343" text-anchor="middle" fill="#3F4653">Any other open tab</text>
+
+            <rect x="230" y="380" width="420" height="28" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="440" y="398" text-anchor="middle" fill="#0C6B42">Verified headless: database write → DOM change in 5 ms</text>
+          </svg>
+        </div>
+        <figcaption>Nothing in the push path knows which service made the change, so a new writer — a future kiosk, an import script, a DBA — gets live updates for free and cannot forget to send them.</figcaption>
+      </figure>
+
+      <div class="callout c-blue">
+        <b>How the 5 ms was measured</b>
+        A headless browser opens the staff calendar and waits. A row is inserted directly into Postgres, bypassing every service. The test asserts the DOM changes without a reload, and measures the gap between the write and the mutation: 5 ms. A cancellation frees the slot on screen just as fast.
+      </div>
+    </section>
+
+    <!-- ================= CONSTRAINTS ================= -->
+    <section id="constraints">
+      <div class="sec-num">07 · Model constraints</div>
+      <h2>Working within a realtime model's real constraints</h2>
+      <p class="lead">A realtime speech model is not a text model with audio bolted on. Building on Gemini Live surfaced four limits that only appear under a real call, and none of them announced themselves as errors — they showed up as a conversation behaving strangely.</p>
+      <p>Each one was found the same way: read the logs, then read the provider's source, rather than guessing at prompt changes. The fixes are all one line.</p>
+
+      <div class="table-scroll">
+        <table class="dtable">
+          <thead>
+            <tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Replies arrived a turn late, or never</td>
+              <td>Client-side turn detection, which Gemini Live doesn't support — <code>commit_audio</code> is a no-op</td>
+              <td><code>turn_detection="realtime_llm"</code></td>
+            </tr>
+            <tr>
+              <td>The agent read its own plan aloud</td>
+              <td>Gemini streams private reasoning as transcript by default</td>
+              <td><code>include_thoughts=False</code></td>
+            </tr>
+            <tr>
+              <td>The session restarted five times per call</td>
+              <td>Every change to the tool list restarts a Gemini session</td>
+              <td>Stop hiding a tool during the greeting</td>
+            </tr>
+            <tr>
+              <td>The call froze mid-booking</td>
+              <td><code>AgentTask</code> inside a function tool is unsupported — <code>manual_function_calls=False</code></td>
+              <td>Plain tool arguments instead</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout c-green">
+        <b>What it bought</b>
+        With turn-taking handed to the model and the session no longer restarting mid-call, the measured gap from a tool completing to the agent speaking again is <strong>0.65 s</strong> — close enough to a human pause that callers stop noticing it.
+      </div>
+
+      <h3>The lesson that generalises</h3>
+      <p>Three of the four problems came from applying a text-agent habit to a realtime session: manage the turn yourself, hide tools until you need them, spawn a sub-task inside a tool. All three are reasonable patterns elsewhere and all three are actively harmful here. The realtime session is a stateful thing you configure once and then leave alone.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> agent/session.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── One session, configured once, tool list never changes ────────────
+session = AgentSession(
+    llm=google.beta.realtime.RealtimeModel(
+        model='gemini-3.1-flash-live-preview',
+        voice='Aoede',
+        # the model owns turn-taking; client-side commit_audio is a no-op
+        turn_detection='realtime_llm',
+        # otherwise the agent reads its private reasoning out loud
+        include_thoughts=False,
+    ),
+)
+
+# All 12 tools registered up front. Adding or removing one mid-call
+# restarts the Gemini session and drops the conversation.
+await session.start(
+    agent=Receptionist(tools=ALL_TOOLS),
+    room=ctx.room,
+)</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= TESTING ================= -->
+    <section id="testing">
+      <div class="sec-num">08 · Testing</div>
+      <h2>Three layers, because three things can be wrong</h2>
+      <p>A voice booking system can fail as a conversation, as a database, or as a live interface — and a test that covers one tells you nothing about the other two. So the suite is split along those lines.</p>
+
+      <div class="compare">
+        <div class="row">
+          <h4>Conversation tests <span class="badge-ok">LLM judge</span></h4>
+          <p>An LLM judges whether the agent recommends the right specialist for a described symptom, redirects an emergency instead of booking it, asks for a phone number before writing anything, and refuses to invent a doctor even when the caller insists one exists.</p>
+        </div>
+        <div class="row">
+          <h4>Database tests <span class="badge-ok">Real Postgres</span></h4>
+          <p>Every tool exercised against a real database, with the failure paths as first-class cases: double booking the same slot, booking in the past, and cancelling an appointment that belongs to someone else.</p>
+        </div>
+        <div class="row">
+          <h4>Browser automation <span class="badge-ok">Playwright</span></h4>
+          <p>Playwright books through the public site, signs into the admin area, then writes to the database directly and asserts the open calendar updates without a reload — which is the only honest way to test the realtime path.</p>
+        </div>
+      </div>
+
+      <div class="callout c-blue">
+        <b>Why the browser test bypasses the API</b>
+        If the test booked through the API, it would prove that the API can push an update. Writing straight to Postgres proves the thing that actually matters: the calendar reacts to the <em>data</em> changing, no matter who changed it.
+      </div>
+
+      <h3>Running it</h3>
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> shell</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code>cd DB &amp;&amp; docker compose up -d                        # database + seed data
+cd clinic-web/web &amp;&amp; npm run build                   # website
+cd clinic-web/api &amp;&amp; uv run uvicorn app.main:app     # site + API on :8000
+cd jaris &amp;&amp; uv run src/agent.py console              # talk to the agent</code></pre>
+      </div>
+      <p>Open the staff calendar beside the agent terminal, book by voice, and watch the slot fill in.</p>
+    </section>
+
+    <!-- ================= LIMITS ================= -->
+    <section id="limits">
+      <div class="sec-num">09 · Limits &amp; production</div>
+      <h2>What this is, and what it isn't</h2>
+      <p class="lead">This was built as a demonstration. Every doctor, patient and phone number in it is fictional, and it has never seen real patient data — which is the only reason it is honest to publish a case study about it at all.</p>
+      <p>The engineering that makes bookings safe is real: the constraints, the derived availability, the notification path and the grounding rules would all survive contact with a clinic. The things that make <em>patient data</em> safe are deliberately out of scope, and putting this in front of real patients would mean building them first.</p>
+
+      <ul class="bullets">
+        <li><strong>Per-user staff accounts</strong> — the admin area is a single shared login; real use needs named accounts with roles, so an action can be attributed to a person</li>
+        <li><strong>Encryption in transit and at rest</strong> — including the call audio and any transcript retained from it</li>
+        <li><strong>An audit trail</strong> — who read or changed which patient record, and when, kept separately from the records themselves</li>
+        <li><strong>Retention policies</strong> — how long recordings, transcripts and cancelled appointments are kept, and what deletes them</li>
+        <li><strong>The regulatory work</strong> — HIPAA or UK GDPR depending on where it runs, which is a programme rather than a feature</li>
+      </ul>
+
+      <div class="callout c-orange">
+        <b>Clinical scope, stated plainly</b>
+        The agent gives no medical advice. It maps what a caller describes to a department and a named doctor, and anything that sounds like an emergency is referred to emergency services rather than booked.
+      </div>
+
+      <h3>What I'd build next</h3>
+      <ul class="bullets">
+        <li>Outbound reminder calls on the same agent, reusing the booking tools in reverse — confirm, reschedule or cancel</li>
+        <li>A waiting list that watches the notification channel and offers a freed slot to the next caller automatically</li>
+        <li>Multi-language handling, since the matching layer is already phrase-tolerant and the department keywords are just arrays</li>
+      </ul>
+
+      <div class="outcomes">
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--green-bg); color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>Correctness in one place</h4>
+          <p>Overlap rules and availability live in the database, so three independent writers cannot disagree about who is free.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--blue-bg); color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>Grounded by construction</h4>
+          <p>Tools return facts, never prose, and a failed lookup returns real alternatives — so there is nothing to invent.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--purple-bg); color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg></span>Live without coupling</h4>
+          <p>The push path is driven by a trigger, so a new writer gets realtime updates without a line of frontend code.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--orange-bg); color:#D9772B"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M14 7h7M3 17h7"/></svg></span>A conversation that recovers</h4>
+          <p>Every write tool reports why it failed in terms the model can act on, so a lost race becomes another offered time.</p>
+        </div>
+      </div>
+    </section>
+
+  </article>
+</div>
+
+<footer class="doc-foot">
+  <div class="wrap foot-card">
+    <div>
+      <h3>Want the deeper version?</h3>
+      <p>Happy to walk through the availability SQL, the realtime path, or the voice tool design in detail.</p>
+    </div>
+    <div class="foot-actions">
+      <a class="btn btn-dark" href="../index.html#contact">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Get In Touch
+      </a>
+      <a class="btn btn-light" href="../index.html#works">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        All Projects
+      </a>
+    </div>
+  </div>
+</footer>
+<div class="copyright">Arqam Ahmed Ansari — AI Engineer · Karachi, Pakistan</div>
+
+<a class="to-top" href="#" id="toTop" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</a>
+
+<script src="../assets/js/case.js"></script>
+
+</body>
+</html>

@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Islamic Knowledge Hub — Multi-Agent RAG | Arqam Ahmed Ansari</title>
+<meta name="description" content="A self-hosted multi-agent RAG system that answers Islamic questions strictly from a corpus of books: LangGraph orchestration, six category agents, per-category LLM judge loops, bge-M3 + Qdrant retrieval and Qwen3-14B-AWQ served with vLLM on a single RTX 3090 Ti.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/case.css">
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<nav class="doc-nav">
+  <div class="wrap">
+    <a class="back-link" href="../index.html#works">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Back to Portfolio
+    </a>
+    <div class="nav-actions">
+      <span class="nav-tag">Case Study</span>
+      <button class="toc-toggle" type="button" id="tocToggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Contents
+      </button>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-hero">
+  <div class="wrap">
+    <div class="kicker-row">
+      <span class="kicker k-purple">Agentic RAG</span>
+      <span class="kicker k-green">Self-Hosted</span>
+      <span class="kicker k-blue">LangGraph · vLLM</span>
+    </div>
+    <h1>Islamic Knowledge Hub: A Self-Hosted Multi-Agent RAG With Per-Category Judge Loops</h1>
+    <p class="standfirst">A local, self-hosted system that answers users' Islamic questions strictly from a curated corpus of Islamic books — six specialized category agents orchestrated with LangGraph, each fed by its own retrieval lane and its own LLM judge loop, with every answer carrying a book and category citation. No external API: a 14B model, quantised and served on one GPU.</p>
+
+    <div class="hero-meta">
+      <div><span>My Role</span><b>AI Engineer — end-to-end</b></div>
+      <div><span>Core Stack</span><b>LangGraph · vLLM · Qwen3-14B-AWQ · bge-M3 · Qdrant · Rerankers</b></div>
+      <div><span>Deployment</span><b>Local, single-GPU, Dockerised</b></div>
+    </div>
+
+    <div class="stat-strip">
+      <div class="stat-box"><b>6</b><span>Specialized category agents</span></div>
+      <div class="stat-box"><b>3</b><span>Max judge retries per category</span></div>
+      <div class="stat-box"><b>14B</b><span>Qwen3 AWQ on one RTX 3090 Ti</span></div>
+      <div class="stat-box"><b>1 GPU</b><span>End-to-end local inference</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="doc-body">
+
+  <aside class="toc" id="toc">
+    <h5>On this page</h5>
+    <a href="#problem" class="active">The problem</a>
+    <a href="#pipeline">1 · The pipeline</a>
+    <a href="#gate">2 · Gate &amp; router</a>
+    <a href="#retrieval">3 · Retrieval internals</a>
+    <a href="#judge">4 · The judge loop</a>
+    <a href="#synthesis">5 · Agents &amp; synthesis</a>
+    <a href="#serving">6 · Serving on one GPU</a>
+    <a href="#outcomes">7 · What it buys</a>
+  </aside>
+
+  <article>
+
+    <!-- ================= PROBLEM ================= -->
+    <section id="problem">
+      <div class="sec-num">The Problem</div>
+      <h2>Religious questions are exactly where a model must not improvise</h2>
+      <p class="lead">People ask religious questions the way they ask any other question — in one sentence, often mixing several distinct information needs, and usually in Urdu. But the tolerance for an invented answer here is zero. An answer is only useful if it can point at the book it came from.</p>
+      <p>The system was <strong>built in-house</strong> as a local, self-hosted assistant over a curated corpus of Islamic books. Three constraints shaped every decision:</p>
+      <ul class="bullets">
+        <li><strong>Grounding above all.</strong> Every sentence of an answer must trace back to retrieved text from the corpus, and the answer must name its source — <em>book · category</em>.</li>
+        <li><strong>One question, several bodies of knowledge.</strong> A single question can touch tafseer, hadith and fiqh at once. Those are different literatures with different conventions; one generic retriever flattens them.</li>
+        <li><strong>Nothing leaves the machine.</strong> No hosted API. The whole stack — LLM, embeddings, reranker, vector store — runs on one box with a single consumer GPU.</li>
+      </ul>
+      <div class="callout c-blue">
+        <b>Design constraint</b>
+        Retrieval quality is not something you can assume. If the chunks handed to an agent are thin, the agent will still write something confident. So the pipeline had to be able to <em>notice</em> that its evidence is weak, try again, and — if it still cannot do better — say so instead of hiding it.
+      </div>
+      <p>That last point is what the rest of this page is really about: a per-category judge loop that sits between retrieval and generation, and a <code class="inline">low_conf</code> flag that survives all the way into the final answer.</p>
+    </section>
+
+    <!-- ================= PIPELINE ================= -->
+    <section id="pipeline">
+      <div class="sec-num">01 · Architecture</div>
+      <h2>One graph, six lanes, one answer</h2>
+      <p>The whole thing is a <strong>LangGraph</strong> state graph. A question enters at a gate, fans out into six independent category lanes that run concurrently, and converges on a synthesizer. Every node is either an LLM call against the local endpoint or a retrieval step.</p>
+
+      <h3>The six stages</h3>
+      <div class="compare">
+        <div class="row">
+          <h4>1 · Gate node <span class="badge-ok">1 LLM call</span></h4>
+          <p>A single call does two jobs at once: decide whether the question is an Islamic question at all, and decompose it into distinct information needs. It returns structured JSON. If the question is out of scope, the graph jumps straight to the final-answer node with a polite decline — no retrieval, no agents, no GPU time spent.</p>
+        </div>
+        <div class="row">
+          <h4>2 · LLM router <span class="badge-ok">Structured output</span></h4>
+          <p>Given the decomposed question, the router selects which of the six categories are actually relevant, and reformulates a sub-query per category <strong>in Urdu</strong> — the language the corpus and the users share.</p>
+        </div>
+        <div class="row">
+          <h4>3 · Parallel retrieval</h4>
+          <p>One <code class="inline">asyncio.gather</code> over the active categories. Each lane runs its own vector search, reranks the candidates down to top-K anchors, then expands ±W neighbouring chunks around every anchor.</p>
+        </div>
+        <div class="row">
+          <h4>4 · Per-category judge loop <span class="badge-ok">Max 3</span></h4>
+          <p>Each lane has its own LLM judge asking one question: are these chunks sufficient? If not, a rewriter expands the sub-query, the lane re-retrieves, merges and dedups, and the judge looks again — at most three times.</p>
+        </div>
+        <div class="row">
+          <h4>5 · Category agents</h4>
+          <p>A LangGraph fan-out into six specialized agents. Each receives only its own chunks plus the <code class="inline">low_conf</code> flag its judge produced, and answers within its own literature.</p>
+        </div>
+        <div class="row picked">
+          <h4>6 · Synthesizer <span class="badge-ok">Short-term memory</span></h4>
+          <p>Merges the category answers into one reply, hedges anything a judge marked low-confidence, keeps a sliding window of the last five turns for follow-ups, and attaches the citations.</p>
+        </div>
+      </div>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 774" role="img" aria-label="End-to-end pipeline: a user question passes a gate node that either declines or continues, an LLM router picks active categories and writes Urdu sub-queries, six parallel lanes each run vector search, reranking, neighbour expansion and an LLM judge, six category agents answer, and a synthesizer produces the final answer with citations">
+            <defs>
+              <marker id="d1a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="d1b" markerWidth="8" markerHeight="8" refX="6.8" refY="2.8" orient="auto"><path d="M0 0l6 2.8-6 2.8z" fill="#B4BAC6"/></marker>
+            </defs>
+
+            <rect x="340" y="12" width="200" height="28" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="31" text-anchor="middle">User question · Urdu</text>
+            <path d="M440 40v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+
+            <rect x="280" y="58" width="320" height="50" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="80" text-anchor="middle">Gate node · 1 LLM call</text>
+            <text class="dg-label" x="440" y="97" text-anchor="middle" opacity="0.7">classify + decompose → structured JSON</text>
+            <path d="M440 108v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+
+            <path d="M440 126l108 40-108 40-108-40z" fill="#F2994A"/>
+            <text class="dg-label" x="440" y="171" text-anchor="middle">Islamic question?</text>
+
+            <path d="M548 166h68" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+            <text class="dg-edge" x="582" y="158" text-anchor="middle">not Islamic</text>
+            <rect x="616" y="144" width="198" height="44" rx="11" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="715" y="164" text-anchor="middle" fill="#A63A3A">Out of scope → decline</text>
+            <text class="dg-small" x="715" y="180" text-anchor="middle" fill="#E05252">polite refusal · no retrieval</text>
+            <text class="dg-small" x="715" y="202" text-anchor="middle" fill="#9599A6">jumps to the final-answer node</text>
+
+            <path d="M440 206v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+            <text class="dg-edge" x="452" y="220">Islamic / complex</text>
+
+            <rect x="280" y="224" width="320" height="50" rx="12" fill="#7C5CFC"/>
+            <text class="dg-label" x="440" y="246" text-anchor="middle">LLM Router · structured output</text>
+            <text class="dg-label" x="440" y="263" text-anchor="middle" opacity="0.8">active categories · sub-queries in Urdu</text>
+            <path d="M440 274v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+
+            <!-- band A : parallel lanes -->
+            <rect x="14" y="292" width="800" height="210" rx="16" fill="#FAFAFC" stroke="#E8E9EF"/>
+            <text class="dg-title" x="28" y="308" fill="#0E1320">Parallel retrieval · asyncio.gather</text>
+            <text class="dg-small" x="800" y="308" text-anchor="end" fill="#6B7180">6 category lanes, concurrently</text>
+            <g stroke="#B4BAC6" stroke-width="1.2" fill="none">
+              <path d="M440 292v24"/>
+              <path d="M86 316h655"/>
+            </g>
+            <g stroke="#B4BAC6" stroke-width="1.2" fill="none" marker-end="url(#d1b)">
+              <path d="M86 316v14"/><path d="M217 316v14"/><path d="M348 316v14"/>
+              <path d="M479 316v14"/><path d="M610 316v14"/><path d="M741 316v14"/>
+            </g>
+
+            <g>
+              <rect x="26" y="330" width="120" height="158" rx="11" fill="#FFFFFF" stroke="#E8E9EF"/>
+              <rect x="157" y="330" width="120" height="158" rx="11" fill="#FFFFFF" stroke="#E8E9EF"/>
+              <rect x="288" y="330" width="120" height="158" rx="11" fill="#FFFFFF" stroke="#E8E9EF"/>
+              <rect x="419" y="330" width="120" height="158" rx="11" fill="#FFFFFF" stroke="#E8E9EF"/>
+              <rect x="550" y="330" width="120" height="158" rx="11" fill="#FFFFFF" stroke="#E8E9EF"/>
+              <rect x="681" y="330" width="120" height="158" rx="11" fill="#FFFFFF" stroke="#E8E9EF"/>
+            </g>
+            <g class="dg-title" text-anchor="middle">
+              <text x="86" y="346" fill="#2F7BF6">Tafseer</text>
+              <text x="217" y="346" fill="#7C5CFC">Hadith</text>
+              <text x="348" y="346" fill="#16A365">Fiqh</text>
+              <text x="479" y="346" fill="#D9772B">Etiquette</text>
+              <text x="610" y="346" fill="#E05252">Imam/Letters</text>
+              <text x="741" y="346" fill="#6B7180">Tareekh</text>
+            </g>
+
+            <g fill="#EAF2FF" stroke="#D6E7FF">
+              <rect x="34" y="352" width="104" height="22" rx="7"/><rect x="165" y="352" width="104" height="22" rx="7"/>
+              <rect x="296" y="352" width="104" height="22" rx="7"/><rect x="427" y="352" width="104" height="22" rx="7"/>
+              <rect x="558" y="352" width="104" height="22" rx="7"/><rect x="689" y="352" width="104" height="22" rx="7"/>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#1A4C9E">
+              <text x="86" y="367">vector search</text><text x="217" y="367">vector search</text><text x="348" y="367">vector search</text>
+              <text x="479" y="367">vector search</text><text x="610" y="367">vector search</text><text x="741" y="367">vector search</text>
+            </g>
+
+            <g fill="#F2EEFF" stroke="#E1D9FF">
+              <rect x="34" y="384" width="104" height="22" rx="7"/><rect x="165" y="384" width="104" height="22" rx="7"/>
+              <rect x="296" y="384" width="104" height="22" rx="7"/><rect x="427" y="384" width="104" height="22" rx="7"/>
+              <rect x="558" y="384" width="104" height="22" rx="7"/><rect x="689" y="384" width="104" height="22" rx="7"/>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#5B3FD6">
+              <text x="86" y="399">rerank · top-K</text><text x="217" y="399">rerank · top-K</text><text x="348" y="399">rerank · top-K</text>
+              <text x="479" y="399">rerank · top-K</text><text x="610" y="399">rerank · top-K</text><text x="741" y="399">rerank · top-K</text>
+            </g>
+
+            <g fill="#E8FAF1" stroke="#CFF3E1">
+              <rect x="34" y="416" width="104" height="22" rx="7"/><rect x="165" y="416" width="104" height="22" rx="7"/>
+              <rect x="296" y="416" width="104" height="22" rx="7"/><rect x="427" y="416" width="104" height="22" rx="7"/>
+              <rect x="558" y="416" width="104" height="22" rx="7"/><rect x="689" y="416" width="104" height="22" rx="7"/>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#0C6B42">
+              <text x="86" y="431">neighbours ±W</text><text x="217" y="431">neighbours ±W</text><text x="348" y="431">neighbours ±W</text>
+              <text x="479" y="431">neighbours ±W</text><text x="610" y="431">neighbours ±W</text><text x="741" y="431">neighbours ±W</text>
+            </g>
+
+            <g stroke="#B4BAC6" stroke-width="1.1" fill="none" marker-end="url(#d1b)">
+              <path d="M86 374v10"/><path d="M217 374v10"/><path d="M348 374v10"/><path d="M479 374v10"/><path d="M610 374v10"/><path d="M741 374v10"/>
+              <path d="M86 406v10"/><path d="M217 406v10"/><path d="M348 406v10"/><path d="M479 406v10"/><path d="M610 406v10"/><path d="M741 406v10"/>
+              <path d="M86 438v10"/><path d="M217 438v10"/><path d="M348 438v10"/><path d="M479 438v10"/><path d="M610 438v10"/><path d="M741 438v10"/>
+            </g>
+
+            <g fill="#FFF2E7" stroke="#FFE0C2">
+              <rect x="34" y="448" width="104" height="32" rx="8"/><rect x="165" y="448" width="104" height="32" rx="8"/>
+              <rect x="296" y="448" width="104" height="32" rx="8"/><rect x="427" y="448" width="104" height="32" rx="8"/>
+              <rect x="558" y="448" width="104" height="32" rx="8"/><rect x="689" y="448" width="104" height="32" rx="8"/>
+            </g>
+            <g class="dg-title" text-anchor="middle" fill="#9A5A17">
+              <text x="86" y="464">LLM judge</text><text x="217" y="464">LLM judge</text><text x="348" y="464">LLM judge</text>
+              <text x="479" y="464">LLM judge</text><text x="610" y="464">LLM judge</text><text x="741" y="464">LLM judge</text>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#D9772B">
+              <text x="86" y="476">retry up to 3×</text><text x="217" y="476">retry up to 3×</text><text x="348" y="476">retry up to 3×</text>
+              <text x="479" y="476">retry up to 3×</text><text x="610" y="476">retry up to 3×</text><text x="741" y="476">retry up to 3×</text>
+            </g>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)">
+              <path d="M86 502v22"/><path d="M217 502v22"/><path d="M348 502v22"/>
+              <path d="M479 502v22"/><path d="M610 502v22"/><path d="M741 502v22"/>
+            </g>
+            <text class="dg-edge" x="414" y="516" text-anchor="middle">chunks + low_conf</text>
+
+            <!-- band C : agents -->
+            <rect x="14" y="524" width="800" height="76" rx="16" fill="#FAFAFC" stroke="#E8E9EF"/>
+            <text class="dg-title" x="28" y="542" fill="#0E1320">Category agents · LangGraph fan-out</text>
+            <text class="dg-small" x="800" y="542" text-anchor="end" fill="#6B7180">each answers only from its own chunks</text>
+            <g>
+              <rect x="26" y="550" width="120" height="40" rx="10" fill="#2F7BF6"/>
+              <rect x="157" y="550" width="120" height="40" rx="10" fill="#7C5CFC"/>
+              <rect x="288" y="550" width="120" height="40" rx="10" fill="#16A365"/>
+              <rect x="419" y="550" width="120" height="40" rx="10" fill="#F2994A"/>
+              <rect x="550" y="550" width="120" height="40" rx="10" fill="#E05252"/>
+              <rect x="681" y="550" width="120" height="40" rx="10" fill="#6B7180"/>
+            </g>
+            <g class="dg-label" text-anchor="middle">
+              <text x="86" y="566">Tafseer</text><text x="86" y="580" opacity="0.8">Agent</text>
+              <text x="217" y="566">Hadith</text><text x="217" y="580" opacity="0.8">Agent</text>
+              <text x="348" y="566">Fiqh</text><text x="348" y="580" opacity="0.8">Agent</text>
+              <text x="479" y="566">Etiquette</text><text x="479" y="580" opacity="0.8">Agent</text>
+              <text x="610" y="566">Imam/Letters</text><text x="610" y="580" opacity="0.8">Agent</text>
+              <text x="741" y="566">Tareekh</text><text x="741" y="580" opacity="0.8">Agent</text>
+            </g>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M86 600v16"/><path d="M217 600v16"/><path d="M348 600v16"/>
+              <path d="M479 600v16"/><path d="M610 600v16"/><path d="M741 600v16"/>
+              <path d="M86 616h655"/>
+            </g>
+            <path d="M440 616v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+
+            <rect x="250" y="634" width="380" height="56" rx="13" fill="#10141F"/>
+            <text class="dg-label" x="440" y="656" text-anchor="middle">Synthesizer · short-term memory</text>
+            <text class="dg-label" x="440" y="674" text-anchor="middle" opacity="0.7">merge · hedge low-confidence · last 5 turns</text>
+            <path d="M440 690v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d1a)"/>
+
+            <rect x="270" y="708" width="340" height="46" rx="12" fill="#7C5CFC"/>
+            <text class="dg-label" x="440" y="728" text-anchor="middle">Final answer + citations</text>
+            <text class="dg-label" x="440" y="744" text-anchor="middle" opacity="0.8">book · category</text>
+
+            <path d="M814 166h32v565H614" stroke="#9599A6" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#d1a)"/>
+          </svg>
+        </div>
+        <figcaption>The decline branch (dashed) skips every expensive node and lands on the same final-answer node, so there is exactly one exit from the graph. Between the router and the synthesizer, the six lanes never talk to each other.</figcaption>
+      </figure>
+
+      <div class="callout c-green">
+        <b>Why a lane per category instead of one big retriever</b>
+        Tafseer, hadith, fiqh, adab, the letters of the imams and tareekh are different literatures. Separating them at the vector-store level means the router can switch a whole body of knowledge off for a question that does not need it — and the judge for each lane only has to reason about one kind of evidence at a time.
+      </div>
+    </section>
+
+    <!-- ================= GATE ================= -->
+    <section id="gate">
+      <div class="sec-num">02 · Gate &amp; Router</div>
+      <h2>One call that decides, and one that dispatches</h2>
+      <p class="lead">The cheapest way to protect a RAG system is to not run it. The gate node is a single LLM call placed before anything expensive, and it does double duty — scope check and query decomposition — because both need the same reading of the question.</p>
+
+      <h3>The gate node</h3>
+      <p>It emits structured JSON: an in-scope boolean, a short reason, and a list of sub-queries. If the question is not an Islamic question, the graph routes directly to the final-answer node with a polite refusal, and the six lanes never start. If it is — and especially if it is a compound question — the sub-query list is what the router works from.</p>
+
+      <div class="callout c-orange">
+        <b>Decline is a first-class branch, not an exception</b>
+        The refusal goes through the same final-answer node as a real answer. One exit means one place to format, log and return a response, and no path where the graph can hang half-finished.
+      </div>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> nodes/gate.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Gate node: ONE call that classifies AND decomposes ───────────────
+from typing import List
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+
+class GateDecision(BaseModel):
+    is_islamic: bool = Field(
+        description='True only if the question concerns Islamic knowledge'
+    )
+    reason: str = Field(description='One short line, for the trace log')
+    is_complex: bool = Field(description='True if it holds several needs')
+    sub_queries: List[str] = Field(
+        default_factory=list,
+        description='Urdu sub-queries, one per distinct information need'
+    )
+
+# Everything points at the local vLLM endpoint, not a hosted API
+local_llm = ChatOpenAI(
+    model='Islamic-rag-model',
+    base_url='http://localhost:8000/v1',
+    api_key='EMPTY',
+    temperature=0.0,
+)
+gate_llm = local_llm.with_structured_output(GateDecision)
+
+
+async def gate_node(state: GraphState) -> dict:
+    '''Relevance check + decomposition. Costs exactly one LLM call.'''
+    decision = await gate_llm.ainvoke(
+        GATE_PROMPT.format(
+            question=state['question'],
+            history=state['history'][-5:],     # sliding window
+        )
+    )
+
+    if not decision.is_islamic:
+        # Short-circuit: straight to the single exit node.
+        return {
+            'declined': True,
+            'route': 'final_answer',
+            'final_answer': POLITE_REFUSAL,
+            'citations': [],
+        }
+
+    return {
+        'declined': False,
+        'route': 'router',
+        'sub_queries': decision.sub_queries or [state['question']],
+        'gate_reason': decision.reason,
+    }</code></pre>
+      </div>
+
+      <h3>The router</h3>
+      <p>The router is the second structured-output call. It maps the decomposed question onto the six categories, returning only those that are actually worth searching, and it writes each sub-query <strong>in Urdu</strong> — matching the language of both the users and the corpus, so the embedding model is comparing like with like rather than translating across a language boundary mid-pipeline.</p>
+      <ul class="checks">
+        <li><strong>Fewer lanes, faster answer</strong> — a purely historical question does not need to wake the fiqh lane</li>
+        <li><strong>Better sub-queries</strong> — a hadith lane gets a sub-query phrased the way hadith literature is indexed, not the user's original sentence</li>
+        <li><strong>Deterministic fan-out</strong> — the set of active categories is a typed list, so the graph builds the same node set every time</li>
+      </ul>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> nodes/router.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Router: which categories, and what to ask each of them ───────────
+from typing import Dict, List, Literal
+
+CATEGORIES = [
+    'tafseer', 'hadith', 'fiqh', 'etiquette', 'imam_letters', 'tareekh'
+]
+Category = Literal[
+    'tafseer', 'hadith', 'fiqh', 'etiquette', 'imam_letters', 'tareekh'
+]
+
+class RoutePlan(BaseModel):
+    active: List[Category] = Field(
+        description='Only the categories that can genuinely contribute'
+    )
+    urdu_sub_queries: Dict[str, str] = Field(
+        description='category -> reformulated sub-query, written in Urdu'
+    )
+
+router_llm = local_llm.with_structured_output(RoutePlan)
+
+
+async def router_node(state: GraphState) -> dict:
+    plan = await router_llm.ainvoke(
+        ROUTER_PROMPT.format(
+            question=state['question'],
+            sub_queries=state['sub_queries'],
+            categories=CATEGORIES,
+        )
+    )
+    active = [c for c in plan.active if c in CATEGORIES] or CATEGORIES
+    return {
+        'active_categories': active,
+        'sub_queries_by_cat': {
+            c: plan.urdu_sub_queries.get(c, state['question'])
+            for c in active
+        },
+    }</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= RETRIEVAL ================= -->
+    <section id="retrieval">
+      <div class="sec-num">03 · Retrieval</div>
+      <h2>Embeddings, metadata separation and neighbour expansion</h2>
+      <p class="lead">Retrieval is where a grounded system is won or lost. Three choices carry most of the weight here: a multilingual embedding model, a vector store that knows which book every chunk came from, and an expansion step that refuses to hand an agent half a passage.</p>
+
+      <h3>bge-M3 for the embeddings</h3>
+      <p><strong>BAAI/bge-M3</strong> embeds both the corpus chunks and the Urdu sub-queries. It is multilingual and handles long inputs, which matters for a corpus that is not in English and for chunks that carry a fair amount of context. A <strong>reranker</strong> then re-scores the vector-search candidates against the sub-query — a cross-encoder look at query and chunk together, rather than the bi-encoder approximation the vector search gives you. The top-K survivors become the lane's <em>anchors</em>.</p>
+
+      <h3>Qdrant, separated by metadata</h3>
+      <p>Every chunk lands in <strong>Qdrant</strong> with a payload recording its book, its category and its position in that book. That payload is what makes the six lanes possible: retrieval is a filtered search, so the fiqh lane physically cannot return a chunk from a tareekh book, and the router can switch categories off without touching the index.</p>
+
+      <h3>Neighbour expansion ±W</h3>
+      <p>Chunking always cuts somewhere. If an anchor happens to be the second half of an argument, an agent reading it alone will answer from a fragment. So after reranking, each anchor is expanded: the chunks immediately before and after it in the same book are pulled in, giving a contiguous window of <code class="inline">2W + 1</code> chunks around every anchor. The book and chunk index in the payload are what make that lookup cheap.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 548" role="img" aria-label="Retrieval internals: an Urdu sub-query is embedded with bge-M3 into a query vector with a payload filter, searched against a Qdrant corpus separated by book and category, the candidate chunks are reranked into top-K anchors, and each anchor is expanded with its neighbouring chunks either side">
+            <defs>
+              <marker id="d3a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="40" y="20" width="220" height="54" rx="12" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="150" y="44" text-anchor="middle" fill="#1A4C9E">Sub-query · Urdu</text>
+            <text class="dg-small" x="150" y="62" text-anchor="middle" fill="#2F7BF6">one per active category</text>
+            <path d="M260 47h36" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+
+            <rect x="300" y="20" width="240" height="54" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="420" y="44" text-anchor="middle" fill="#0C6B42">BAAI/bge-M3</text>
+            <text class="dg-small" x="420" y="62" text-anchor="middle" fill="#16A365">dense embedding of the sub-query</text>
+            <path d="M540 47h36" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+
+            <rect x="580" y="20" width="260" height="54" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="710" y="44" text-anchor="middle" fill="#5B3FD6">Vector + payload filter</text>
+            <text class="dg-small" x="710" y="62" text-anchor="middle" fill="#7C5CFC">category in active set · book metadata</text>
+            <path d="M710 74v30" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+            <text class="dg-edge" x="722" y="94">filtered ANN search</text>
+
+            <rect x="14" y="104" width="852" height="156" rx="16" fill="#FAFAFC" stroke="#E8E9EF"/>
+            <text class="dg-title" x="28" y="126" fill="#0E1320">Qdrant · one corpus, metadata-separated per book</text>
+            <text class="dg-small" x="852" y="126" text-anchor="end" fill="#6B7180">payload: { book, category, chunk_id }</text>
+
+            <g>
+              <rect x="30" y="136" width="128" height="22" rx="7" fill="#2F7BF6"/>
+              <rect x="167" y="136" width="128" height="22" rx="7" fill="#7C5CFC"/>
+              <rect x="304" y="136" width="128" height="22" rx="7" fill="#16A365"/>
+              <rect x="441" y="136" width="128" height="22" rx="7" fill="#F2994A"/>
+              <rect x="578" y="136" width="128" height="22" rx="7" fill="#E05252"/>
+              <rect x="715" y="136" width="128" height="22" rx="7" fill="#6B7180"/>
+            </g>
+            <g class="dg-label" text-anchor="middle">
+              <text x="94" y="151">Tafseer</text><text x="231" y="151">Hadith</text><text x="368" y="151">Fiqh</text>
+              <text x="505" y="151">Etiquette</text><text x="642" y="151">Imam/Letters</text><text x="779" y="151">Tareekh</text>
+            </g>
+
+            <g fill="#FFFFFF" stroke="#E8E9EF">
+              <rect x="30" y="164" width="128" height="20" rx="6"/><rect x="167" y="164" width="128" height="20" rx="6"/><rect x="304" y="164" width="128" height="20" rx="6"/>
+              <rect x="441" y="164" width="128" height="20" rx="6"/><rect x="578" y="164" width="128" height="20" rx="6"/><rect x="715" y="164" width="128" height="20" rx="6"/>
+              <rect x="30" y="188" width="128" height="20" rx="6"/><rect x="167" y="188" width="128" height="20" rx="6"/><rect x="304" y="188" width="128" height="20" rx="6"/>
+              <rect x="441" y="188" width="128" height="20" rx="6"/><rect x="578" y="188" width="128" height="20" rx="6"/><rect x="715" y="188" width="128" height="20" rx="6"/>
+              <rect x="30" y="212" width="128" height="20" rx="6"/><rect x="167" y="212" width="128" height="20" rx="6"/><rect x="304" y="212" width="128" height="20" rx="6"/>
+              <rect x="441" y="212" width="128" height="20" rx="6"/><rect x="578" y="212" width="128" height="20" rx="6"/><rect x="715" y="212" width="128" height="20" rx="6"/>
+            </g>
+            <g class="dg-mono" text-anchor="middle" fill="#3F4653">
+              <text x="94" y="178">book_a</text><text x="231" y="178">book_a</text><text x="368" y="178">book_a</text>
+              <text x="505" y="178">book_a</text><text x="642" y="178">book_a</text><text x="779" y="178">book_a</text>
+              <text x="94" y="202">book_b</text><text x="231" y="202">book_b</text><text x="368" y="202">book_b</text>
+              <text x="505" y="202">book_b</text><text x="642" y="202">book_b</text><text x="779" y="202">book_b</text>
+            </g>
+            <g class="dg-mono" text-anchor="middle" fill="#9599A6">
+              <text x="94" y="226">+ more</text><text x="231" y="226">+ more</text><text x="368" y="226">+ more</text>
+              <text x="505" y="226">+ more</text><text x="642" y="226">+ more</text><text x="779" y="226">+ more</text>
+            </g>
+            <text class="dg-small" x="440" y="248" text-anchor="middle" fill="#6B7180">filters restrict the search to the categories the router activated</text>
+
+            <path d="M440 260v16H150v14" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+
+            <rect x="40" y="290" width="220" height="56" rx="12" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="150" y="314" text-anchor="middle" fill="#9A5A17">Candidate chunks</text>
+            <text class="dg-small" x="150" y="332" text-anchor="middle" fill="#D9772B">top-N from the vector search</text>
+            <path d="M260 318h36" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+
+            <rect x="300" y="290" width="240" height="56" rx="12" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="420" y="314" text-anchor="middle" fill="#A63A3A">Reranker</text>
+            <text class="dg-small" x="420" y="332" text-anchor="middle" fill="#E05252">re-scores each chunk against the query</text>
+            <path d="M540 318h36" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+
+            <rect x="580" y="290" width="260" height="56" rx="12" fill="#2F7BF6"/>
+            <text class="dg-label" x="710" y="314" text-anchor="middle">Top-K anchors</text>
+            <text class="dg-label" x="710" y="332" text-anchor="middle" opacity="0.8">the best-matching chunks</text>
+            <path d="M710 346v34" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d3a)"/>
+            <text class="dg-edge" x="722" y="366">expand around each anchor</text>
+
+            <rect x="14" y="380" width="852" height="150" rx="16" fill="#FAFAFC" stroke="#E8E9EF"/>
+            <text class="dg-title" x="28" y="402" fill="#0E1320">Neighbour expansion ±W</text>
+            <text class="dg-small" x="852" y="402" text-anchor="end" fill="#6B7180">pull the chunks either side of every anchor</text>
+
+            <g fill="#F1F2F6" stroke="#E8E9EF">
+              <rect x="48" y="418" width="64" height="44" rx="8"/>
+              <rect x="120" y="418" width="64" height="44" rx="8"/>
+              <rect x="192" y="418" width="64" height="44" rx="8"/>
+              <rect x="624" y="418" width="64" height="44" rx="8"/>
+              <rect x="696" y="418" width="64" height="44" rx="8"/>
+              <rect x="768" y="418" width="64" height="44" rx="8"/>
+            </g>
+            <g fill="#D6E7FF" stroke="#B9D6FF">
+              <rect x="264" y="418" width="64" height="44" rx="8"/>
+              <rect x="336" y="418" width="64" height="44" rx="8"/>
+              <rect x="480" y="418" width="64" height="44" rx="8"/>
+              <rect x="552" y="418" width="64" height="44" rx="8"/>
+            </g>
+            <rect x="408" y="418" width="64" height="44" rx="8" fill="#2F7BF6"/>
+
+            <g class="dg-mono" text-anchor="middle" fill="#9599A6">
+              <text x="80" y="445">n−5</text><text x="152" y="445">n−4</text><text x="224" y="445">n−3</text>
+              <text x="656" y="445">n+3</text><text x="728" y="445">n+4</text><text x="800" y="445">n+5</text>
+            </g>
+            <g class="dg-mono" text-anchor="middle" fill="#1A4C9E">
+              <text x="296" y="445">n−2</text><text x="368" y="445">n−1</text>
+              <text x="512" y="445">n+1</text><text x="584" y="445">n+2</text>
+            </g>
+            <text class="dg-label" x="440" y="438" text-anchor="middle">anchor</text>
+            <text class="dg-mono" x="440" y="452" text-anchor="middle" fill="#FFFFFF">chunk n</text>
+
+            <path d="M264 476v-6h352v6" stroke="#7C5CFC" stroke-width="1.4" fill="none"/>
+            <path d="M440 470v14" stroke="#7C5CFC" stroke-width="1.4" fill="none"/>
+            <text class="dg-title" x="440" y="498" text-anchor="middle" fill="#5B3FD6">window passed on = 2W + 1 contiguous chunks (here W = 2)</text>
+            <text class="dg-small" x="440" y="518" text-anchor="middle" fill="#6B7180">so a passage is never cut off mid-argument at a chunk boundary</text>
+          </svg>
+        </div>
+        <figcaption>The grey chunks were never retrieved. The blue anchor is what the reranker chose; its neighbours come along for free because the payload knows which book and which position each chunk belongs to.</figcaption>
+      </figure>
+
+      <h3>Six lanes, one gather</h3>
+      <p>The lanes have no reason to wait for each other, so the whole fan-out is a single <code class="inline">asyncio.gather</code>. Six vector searches, six rerank passes and six expansions overlap; the batching settings on the vLLM side (later on this page) are what let the LLM steps do the same.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> retrieval.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Filtered retrieval → rerank → neighbour expansion, per category ──
+import asyncio
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+COLLECTION = 'islamic_corpus'
+TOP_N   = 60      # candidates handed to the reranker
+TOP_K   = 8       # anchors kept after reranking
+WINDOW  = 2       # neighbouring chunks pulled either side of an anchor
+
+
+async def search_category(category: str, sub_query: str) -> list:
+    '''Vector search restricted to one category by payload filter.'''
+    vector = await embedder.aembed_query(sub_query)          # bge-M3
+    return await qdrant.asearch(
+        collection_name=COLLECTION,
+        query_vector=vector,
+        query_filter=Filter(must=[
+            FieldCondition(key='category',
+                           match=MatchValue(value=category))
+        ]),
+        limit=TOP_N,
+        with_payload=True,
+    )
+
+
+async def expand_neighbours(anchors: list, window: int = WINDOW) -> list:
+    '''Pull chunk_id +/- window from the SAME book, then order and dedup.'''
+    wanted = set()
+    for a in anchors:
+        book, idx = a.payload['book'], a.payload['chunk_id']
+        for offset in range(-window, window + 1):
+            wanted.add((book, idx + offset))
+
+    neighbours = await qdrant.aretrieve_by_keys(COLLECTION, wanted)
+    merged = dedup_by_key(anchors + neighbours)
+    return sorted(merged, key=lambda c: (c['book'], c['chunk_id']))
+
+
+async def retrieve_lane(category: str, sub_query: str) -> list:
+    hits    = await search_category(category, sub_query)
+    anchors = await reranker.arerank(sub_query, hits, top_k=TOP_K)
+    return await expand_neighbours(anchors)
+
+
+# ── The fan-out: every active category at the same time ──────────────
+async def parallel_retrieval(state: GraphState) -> dict:
+    active = state['active_categories']
+    lanes  = [
+        retrieve_lane(c, state['sub_queries_by_cat'][c]) for c in active
+    ]
+    results = await asyncio.gather(*lanes)
+    return {'chunks_by_cat': dict(zip(active, results))}</code></pre>
+      </div>
+
+      <div class="callout c-blue">
+        <b>Evaluated, not assumed</b>
+        The retrieval side is measured with a RAG evaluation pass over a held-out set of questions — checking whether the chunks a lane returns actually contain the answer, and whether the answer written from them stays inside those chunks. That is what the tuning of top-N, top-K and the expansion window was driven by, rather than intuition.
+      </div>
+    </section>
+
+    <!-- ================= JUDGE ================= -->
+    <section id="judge">
+      <div class="sec-num">04 · The Judge Loop</div>
+      <h2>Letting a lane admit its evidence is thin</h2>
+      <p class="lead">This is the part of the system I find most interesting. Between retrieval and generation, every category lane runs its own LLM judge whose only job is to answer one question: <em>can this question be answered from these chunks?</em> If the answer is no, the lane does not shrug and generate anyway — it tries again.</p>
+
+      <h3>The loop, step by step</h3>
+      <ul class="bullets">
+        <li><strong>Judge.</strong> An LLM call sees the sub-query and the accumulated chunks, and returns a sufficiency verdict plus a short note on what is missing.</li>
+        <li><strong>Sufficient →</strong> the chunks go straight to that category's agent with <code class="inline">low_conf = False</code>.</li>
+        <li><strong>Not sufficient, attempts remaining →</strong> a <strong>query rewriter</strong> expands or rephrases the sub-query using the judge's note about what was missing, the lane re-retrieves with the new phrasing, reranks the new candidates, then <strong>merges and dedups</strong> them into everything gathered so far — and the judge looks at the enlarged pool.</li>
+        <li><strong>Still not sufficient at attempt 3 →</strong> the lane gives up trying and passes the pool on anyway, with <code class="inline">low_conf = True</code>.</li>
+      </ul>
+
+      <div class="callout c-orange">
+        <b>Why the pool accumulates instead of being replaced</b>
+        Each retry merges into what the lane already has rather than starting over. A rewritten query often surfaces a different part of the same discussion, so the useful chunks from attempt 1 are still useful at attempt 3 — and dedup on (book, chunk_id) keeps the pool from doubling up on the neighbours it already pulled.
+      </div>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 656" role="img" aria-label="One category lane in detail: an LLM judge decides whether the accumulated chunks are sufficient; if yes the chunks go to the agent with low_conf false; if no and fewer than three attempts have been made, a query rewriter, re-retrieval, reranking and a merge and dedup step feed the evidence pool and the judge runs again; at the third failed attempt the chunks are passed anyway with low_conf true">
+            <defs>
+              <marker id="d2a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <text class="dg-small" x="14" y="16" fill="#6B7180">One category lane — all six run this same loop in parallel</text>
+
+            <rect x="160" y="26" width="280" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="300" y="45" text-anchor="middle">Chunks from this lane's retrieval</text>
+            <path d="M300 56v14" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+
+            <rect x="150" y="70" width="300" height="50" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="300" y="92" text-anchor="middle" fill="#5B3FD6">Evidence pool</text>
+            <text class="dg-small" x="300" y="110" text-anchor="middle" fill="#7C5CFC">everything accumulated so far, deduped</text>
+            <path d="M300 120v16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+
+            <path d="M300 138l120 42-120 42-120-42z" fill="#6B7180"/>
+            <text class="dg-label" x="300" y="176" text-anchor="middle">LLM judge</text>
+            <text class="dg-label" x="300" y="192" text-anchor="middle" opacity="0.8">chunks sufficient?</text>
+
+            <path d="M420 180h76" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+            <text class="dg-edge" x="458" y="172" text-anchor="middle">no</text>
+
+            <path d="M600 138l104 42-104 42-104-42z" fill="#F2994A"/>
+            <text class="dg-label" x="600" y="184" text-anchor="middle">retries &lt; 3 ?</text>
+
+            <path d="M704 180h61v50" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+            <text class="dg-edge" x="730" y="172" text-anchor="middle">yes</text>
+
+            <rect x="680" y="230" width="170" height="42" rx="10" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="765" y="250" text-anchor="middle" fill="#1A4C9E">Query rewriter</text>
+            <text class="dg-small" x="765" y="265" text-anchor="middle" fill="#2F7BF6">expand / rephrase, in Urdu</text>
+            <path d="M765 272v12" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+
+            <rect x="680" y="284" width="170" height="42" rx="10" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="765" y="304" text-anchor="middle" fill="#1A4C9E">Re-retrieve</text>
+            <text class="dg-small" x="765" y="319" text-anchor="middle" fill="#2F7BF6">same category filter</text>
+            <path d="M765 326v12" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+
+            <rect x="680" y="338" width="170" height="42" rx="10" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="765" y="358" text-anchor="middle" fill="#1A4C9E">Rerank</text>
+            <text class="dg-small" x="765" y="373" text-anchor="middle" fill="#2F7BF6">score only the new chunks</text>
+            <path d="M765 380v12" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+
+            <rect x="680" y="392" width="170" height="42" rx="10" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="765" y="412" text-anchor="middle" fill="#0C6B42">Merge + dedup</text>
+            <text class="dg-small" x="765" y="427" text-anchor="middle" fill="#16A365">into the evidence pool</text>
+
+            <path d="M850 413h16V90H454" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+            <text class="dg-edge" x="660" y="82" text-anchor="middle">merged back → judged again</text>
+            <text class="dg-small" x="765" y="452" text-anchor="middle" fill="#6B7180">at most 3 passes</text>
+
+            <path d="M300 222v248" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+            <text class="dg-edge" x="312" y="250">yes · sufficient</text>
+
+            <path d="M600 222v248" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+            <text class="dg-edge" x="592" y="250" text-anchor="end">no · 3rd attempt failed</text>
+
+            <rect x="160" y="470" width="280" height="58" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="300" y="494" text-anchor="middle" fill="#0C6B42">Sufficient evidence</text>
+            <text class="dg-small" x="300" y="512" text-anchor="middle" fill="#16A365">pass chunks · low_conf = False</text>
+
+            <rect x="460" y="470" width="280" height="58" rx="12" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="600" y="494" text-anchor="middle" fill="#A63A3A">Still not sufficient</text>
+            <text class="dg-small" x="600" y="512" text-anchor="middle" fill="#E05252">pass anyway · low_conf = True</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M300 528v28"/><path d="M600 528v28"/><path d="M300 556h300"/>
+            </g>
+            <path d="M450 556v24" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d2a)"/>
+
+            <rect x="250" y="580" width="400" height="56" rx="13" fill="#10141F"/>
+            <text class="dg-label" x="450" y="604" text-anchor="middle">Category agent — e.g. the Fiqh Agent</text>
+            <text class="dg-label" x="450" y="622" text-anchor="middle" opacity="0.7">answers from its own chunks · carries low_conf onward</text>
+          </svg>
+        </div>
+        <figcaption>The loop only ever adds evidence. The counter is the escape hatch: at the third failed verdict the lane stops spending GPU time and instead marks itself low-confidence, which is information the synthesizer can actually use.</figcaption>
+      </figure>
+
+      <h3>The retry logic</h3>
+      <p>Each lane's loop is a plain async function, so all six loops are themselves gathered — a lane that passes on its first judge call is not held up by a lane on its third rewrite.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> nodes/judge.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Per-category judge loop: retry, accumulate, then admit defeat ────
+MAX_RETRIES = 3
+
+class Verdict(BaseModel):
+    sufficient: bool = Field(
+        description='True if these chunks can answer the sub-query'
+    )
+    missing: str = Field(
+        default='', description='What is absent, used by the rewriter'
+    )
+
+class Rewrite(BaseModel):
+    sub_query: str = Field(description='Broader Urdu sub-query to retry')
+
+judge_llm    = local_llm.with_structured_output(Verdict)
+rewriter_llm = local_llm.with_structured_output(Rewrite)
+
+
+async def judge_loop(category: str, sub_query: str, chunks: list) -> dict:
+    '''Runs for ONE category. Returns chunks plus a confidence flag.'''
+    pool    = chunks
+    current = sub_query
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        verdict = await judge_llm.ainvoke(
+            JUDGE_PROMPT.format(
+                category=category, sub_query=current, chunks=pool
+            )
+        )
+
+        if verdict.sufficient:
+            return {'category': category, 'chunks': pool,
+                    'low_conf': False, 'attempts': attempt}
+
+        if attempt == MAX_RETRIES:
+            break                      # out of retries, fall through
+
+        # Rewrite using WHAT THE JUDGE SAID WAS MISSING, then re-retrieve
+        rewrite = await rewriter_llm.ainvoke(
+            REWRITE_PROMPT.format(
+                sub_query=current, missing=verdict.missing
+            )
+        )
+        current = rewrite.sub_query
+        fresh   = await retrieve_lane(category, current)
+        pool    = dedup_by_key(pool + fresh)        # merge, never replace
+
+    # Three failed verdicts: hand it over, but say so honestly.
+    return {'category': category, 'chunks': pool,
+            'low_conf': True, 'attempts': MAX_RETRIES}
+
+
+# ── All six judge loops run concurrently, same as retrieval ──────────
+async def judge_all(state: GraphState) -> dict:
+    loops = [
+        judge_loop(c, state['sub_queries_by_cat'][c],
+                   state['chunks_by_cat'][c])
+        for c in state['active_categories']
+    ]
+    graded = await asyncio.gather(*loops)
+    return {'graded_by_cat': {g['category']: g for g in graded}}</code></pre>
+      </div>
+
+      <div class="callout c-green">
+        <b>The flag is the point</b>
+        <code class="inline">low_conf</code> is not a log line. It travels with the chunks into the category agent, and then into the synthesizer, where it changes how that category's contribution is worded in the final answer. A weakly-evidenced category gets hedged rather than quietly presented with the same confidence as a well-evidenced one.
+      </div>
+    </section>
+
+    <!-- ================= SYNTHESIS ================= -->
+    <section id="synthesis">
+      <div class="sec-num">05 · Agents &amp; Synthesis</div>
+      <h2>Six answers, one reply, and memory that knows its place</h2>
+      <p>Once a lane's judge has ruled, LangGraph fans out into the category agents. Each agent is a small specialist: its own prompt, its own conventions, and a context window containing <strong>only its own chunks</strong> plus the <code class="inline">low_conf</code> flag. A hadith agent is not asked to reason about jurisprudence, and a fiqh agent never sees tareekh chunks it might drift into.</p>
+
+      <div class="tool-grid">
+        <div class="tool t-knowledge"><b>tafseer_agent</b><p>Answers from commentary literature, staying with the exegesis the retrieved passages actually give.</p></div>
+        <div class="tool t-knowledge"><b>hadith_agent</b><p>Works from narration collections, reporting what the retrieved text states rather than generalising.</p></div>
+        <div class="tool t-knowledge"><b>fiqh_agent</b><p>Handles questions of practice, keeping to the rulings present in its own chunks.</p></div>
+        <div class="tool t-action"><b>etiquette_agent</b><p>Covers adab and conduct material from the books assigned to that category.</p></div>
+        <div class="tool t-action"><b>imam_letters_agent</b><p>Draws on the letters and writings grouped under that category in the corpus.</p></div>
+        <div class="tool t-action"><b>tareekh_agent</b><p>Historical material — events, sequence and context as the retrieved sources record them.</p></div>
+      </div>
+
+      <h3>Short-term memory: a sliding window of five turns</h3>
+      <p>The synthesizer keeps the last five turns of the conversation, and nothing more. That is enough for the thing conversational memory is actually needed for — resolving "what about the second one?" or "and in that same chapter?" — without letting an ever-growing transcript compete with the retrieved chunks for the model's attention, or eat into a 12k context window that the evidence needs.</p>
+      <p>Crucially, memory resolves <em>the question</em>, never the answer. A follow-up is rewritten into a standalone question using the window, and then goes through the same gate, router, retrieval and judging as any other question. The books remain the only source of substance.</p>
+
+      <h3>How a low-confidence category reaches the reader</h3>
+      <p>The synthesizer receives one answer per active category, each tagged with its flag. Well-evidenced categories are merged normally. A category whose judge never reached sufficiency is <strong>hedged</strong> — presented as what the retrieved material suggests rather than as a settled statement — and its citations still name the book and category so a reader can go and check. Then the answer and the user's turn append to the window.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 448" role="img" aria-label="Memory and hedging: a sliding window keeps the last five conversation turns while older turns drop out; six category answers each carry a low confidence flag into the synthesizer, which hedges the low confidence ones and attaches citations to the final answer, and the finished turn appends back into the window">
+            <defs>
+              <marker id="d5a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="14" y="14" width="852" height="140" rx="16" fill="#FAFAFC" stroke="#E8E9EF"/>
+            <text class="dg-title" x="28" y="36" fill="#0E1320">Short-term memory · sliding window of the last 5 turns</text>
+            <path d="M245 58v-8h490v8" stroke="#7C5CFC" stroke-width="1.4" fill="none"/>
+            <text class="dg-edge" x="490" y="44" text-anchor="middle" fill="#7C5CFC">kept in context — last 5 turns</text>
+
+            <g fill="#F1F2F6" stroke="#E8E9EF">
+              <rect x="45" y="64" width="90" height="44" rx="9"/>
+              <rect x="145" y="64" width="90" height="44" rx="9"/>
+            </g>
+            <g fill="#F2EEFF" stroke="#E1D9FF">
+              <rect x="245" y="64" width="90" height="44" rx="9"/>
+              <rect x="345" y="64" width="90" height="44" rx="9"/>
+              <rect x="445" y="64" width="90" height="44" rx="9"/>
+              <rect x="545" y="64" width="90" height="44" rx="9"/>
+              <rect x="645" y="64" width="90" height="44" rx="9"/>
+            </g>
+            <rect x="745" y="64" width="90" height="44" rx="9" fill="#7C5CFC"/>
+
+            <g class="dg-mono" text-anchor="middle" fill="#9599A6">
+              <text x="90" y="84">t−7</text><text x="190" y="84">t−6</text>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#9599A6">
+              <text x="90" y="99">dropped</text><text x="190" y="99">dropped</text>
+            </g>
+            <g class="dg-mono" text-anchor="middle" fill="#5B3FD6">
+              <text x="290" y="84">t−5</text><text x="390" y="84">t−4</text><text x="490" y="84">t−3</text>
+              <text x="590" y="84">t−2</text><text x="690" y="84">t−1</text>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#7C5CFC">
+              <text x="290" y="99">in window</text><text x="390" y="99">in window</text><text x="490" y="99">in window</text>
+              <text x="590" y="99">in window</text><text x="690" y="99">in window</text>
+            </g>
+            <text class="dg-label" x="790" y="84" text-anchor="middle">t · now</text>
+            <text class="dg-label" x="790" y="99" text-anchor="middle" opacity="0.8">current turn</text>
+
+            <text class="dg-small" x="440" y="134" text-anchor="middle" fill="#6B7180">follow-ups resolve against the window — but every claim still comes from the retrieved books, not the history</text>
+
+            <text class="dg-title" x="14" y="186" fill="#0E1320">Six category answers → one hedged reply</text>
+
+            <g fill="#E8FAF1" stroke="#CFF3E1">
+              <rect x="28" y="200" width="128" height="52" rx="11"/>
+              <rect x="167" y="200" width="128" height="52" rx="11"/>
+              <rect x="445" y="200" width="128" height="52" rx="11"/>
+              <rect x="584" y="200" width="128" height="52" rx="11"/>
+            </g>
+            <g fill="#FDEEEE" stroke="#F8D7D7">
+              <rect x="306" y="200" width="128" height="52" rx="11"/>
+              <rect x="723" y="200" width="128" height="52" rx="11"/>
+            </g>
+            <g class="dg-title" text-anchor="middle" fill="#0C6B42">
+              <text x="92" y="222">Tafseer</text><text x="231" y="222">Hadith</text>
+              <text x="509" y="222">Etiquette</text><text x="648" y="222">Imam/Letters</text>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#16A365">
+              <text x="92" y="240">low_conf = False</text><text x="231" y="240">low_conf = False</text>
+              <text x="509" y="240">low_conf = False</text><text x="648" y="240">low_conf = False</text>
+            </g>
+            <g class="dg-title" text-anchor="middle" fill="#A63A3A">
+              <text x="370" y="222">Fiqh</text><text x="787" y="222">Tareekh</text>
+            </g>
+            <g class="dg-small" text-anchor="middle" fill="#E05252">
+              <text x="370" y="240">low_conf = True</text><text x="787" y="240">low_conf = True</text>
+            </g>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none">
+              <path d="M92 252v20"/><path d="M231 252v20"/><path d="M370 252v20"/>
+              <path d="M509 252v20"/><path d="M648 252v20"/><path d="M787 252v20"/>
+              <path d="M92 272h695"/>
+            </g>
+            <path d="M440 272v22" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d5a)"/>
+
+            <rect x="190" y="294" width="500" height="56" rx="13" fill="#10141F"/>
+            <text class="dg-label" x="440" y="318" text-anchor="middle">Synthesizer</text>
+            <text class="dg-label" x="440" y="336" text-anchor="middle" opacity="0.75">merge · hedge the low-confidence categories · attach citations</text>
+            <path d="M440 350v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d5a)"/>
+
+            <rect x="190" y="368" width="500" height="62" rx="13" fill="#7C5CFC"/>
+            <text class="dg-label" x="440" y="390" text-anchor="middle">Final answer</text>
+            <text class="dg-label" x="440" y="406" text-anchor="middle" opacity="0.85">hedged wherever the evidence was thin</text>
+            <text class="dg-label" x="440" y="422" text-anchor="middle" opacity="0.85">citations: book · category</text>
+
+            <path d="M690 399h176V170H790v-16" stroke="#9599A6" stroke-width="1.4" fill="none" stroke-dasharray="5 4" marker-end="url(#d5a)"/>
+            <text class="dg-edge" x="852" y="392" text-anchor="end">appends to the window</text>
+          </svg>
+        </div>
+        <figcaption>Two of six categories came back weakly evidenced. They are not dropped and not silently blended in — they are hedged, and the reader can still see which book and category they came from.</figcaption>
+      </figure>
+
+      <h3>Wiring it up</h3>
+      <p>All of it is one LangGraph <code class="inline">StateGraph</code>. The gate's conditional edge is the only branch; everything after the router is a fan-out and a fan-in.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> graph.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── The LangGraph state machine ──────────────────────────────────────
+from langgraph.graph import StateGraph, START, END
+
+WINDOW_TURNS = 5          # short-term memory: last 5 turns only
+
+
+async def category_agents(state: GraphState) -> dict:
+    '''Fan-out: each agent sees ONLY its own chunks and its own flag.'''
+    graded = state['graded_by_cat']
+    runs = [
+        AGENTS[cat].ainvoke({
+            'sub_query': state['sub_queries_by_cat'][cat],
+            'chunks':    g['chunks'],
+            'low_conf':  g['low_conf'],
+        })
+        for cat, g in graded.items()
+    ]
+    answers = await asyncio.gather(*runs)
+    return {'answers_by_cat': dict(zip(graded.keys(), answers))}
+
+
+async def synthesizer(state: GraphState) -> dict:
+    '''Merge, hedge anything low_conf, cite, and roll the window.'''
+    if state['declined']:                  # the gate's short-circuit
+        return {'final_answer': state['final_answer'], 'citations': []}
+
+    parts = [
+        {'category': cat,
+         'answer':   a['text'],
+         'hedge':    state['graded_by_cat'][cat]['low_conf'],
+         'sources':  a['sources']}          # book + category per chunk
+        for cat, a in state['answers_by_cat'].items()
+    ]
+    final = await local_llm.ainvoke(
+        SYNTH_PROMPT.format(
+            question=state['question'],
+            history=state['history'][-WINDOW_TURNS:],
+            parts=parts,
+        )
+    )
+    history = (state['history'] + [(state['question'], final.content)])
+    return {
+        'final_answer': final.content,
+        'citations': collect_citations(parts),
+        'history': history[-WINDOW_TURNS:],     # slide the window
+    }
+
+
+graph = StateGraph(GraphState)
+graph.add_node('gate', gate_node)
+graph.add_node('router', router_node)
+graph.add_node('retrieve', parallel_retrieval)
+graph.add_node('judge', judge_all)
+graph.add_node('agents', category_agents)
+graph.add_node('final_answer', synthesizer)
+
+graph.add_edge(START, 'gate')
+graph.add_conditional_edges(
+    'gate',
+    lambda s: s['route'],                 # 'router' or 'final_answer'
+    {'router': 'router', 'final_answer': 'final_answer'},
+)
+graph.add_edge('router', 'retrieve')
+graph.add_edge('retrieve', 'judge')
+graph.add_edge('judge', 'agents')
+graph.add_edge('agents', 'final_answer')
+graph.add_edge('final_answer', END)
+
+app = graph.compile()</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= SERVING ================= -->
+    <section id="serving">
+      <div class="sec-num">06 · Serving</div>
+      <h2>A 14B model, six concurrent agents, one RTX 3090 Ti</h2>
+      <p class="lead">Every LLM call in this system — the gate, the router, six judges, the rewriters, six agents and the synthesizer — hits the same local endpoint. There is no hosted API anywhere in the pipeline, which means the serving configuration is not an afterthought: it is the thing that decides whether the architecture is even runnable.</p>
+
+      <p><strong>Qwen3-14B-AWQ</strong> is served with <strong>vLLM</strong> in a container, exposing an OpenAI-compatible endpoint that LangChain talks to unchanged. A 14B model in fp16 would not fit on a 24 GB card alongside a KV cache large enough for six concurrent requests, so the configuration trades precision for room in the places where precision costs least.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 568" role="img" aria-label="Serving stack: all LangGraph nodes call one local vLLM container running Qwen3-14B-AWQ with four-bit weights, an fp8 KV cache, prefix caching and continuous batching, on a single RTX 3090 Ti, while the bge-M3 embedding model, the reranker and Qdrant run on the same machine">
+            <defs>
+              <marker id="d4a" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="14" y="14" width="852" height="64" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="440" y="34" text-anchor="middle" fill="#5B3FD6">LangGraph nodes — every LLM call hits the same local endpoint</text>
+            <g fill="#FFFFFF" stroke="#E1D9FF">
+              <rect x="37" y="44" width="150" height="24" rx="7"/>
+              <rect x="201" y="44" width="150" height="24" rx="7"/>
+              <rect x="365" y="44" width="150" height="24" rx="7"/>
+              <rect x="529" y="44" width="150" height="24" rx="7"/>
+              <rect x="693" y="44" width="150" height="24" rx="7"/>
+            </g>
+            <g class="dg-mono" text-anchor="middle" fill="#5B3FD6">
+              <text x="112" y="60">gate ×1</text><text x="276" y="60">router ×1</text><text x="440" y="60">judges ×6</text>
+              <text x="604" y="60">agents ×6</text><text x="768" y="60">synthesizer ×1</text>
+            </g>
+
+            <path d="M440 78v32" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+            <text class="dg-edge" x="452" y="96">OpenAI-compatible HTTP</text>
+            <path d="M750 78v32" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+            <text class="dg-edge" x="762" y="96">retrieval path</text>
+
+            <rect x="14" y="110" width="600" height="300" rx="16" fill="#10141F"/>
+            <text class="dg-label" x="34" y="136">vLLM container · vllm/vllm-openai:latest</text>
+            <text class="dg-mono" x="34" y="152" fill="#8891A8">--served-model-name Islamic-rag-model</text>
+
+            <rect x="34" y="168" width="270" height="72" rx="12" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="169" y="192" text-anchor="middle" fill="#1A4C9E">Qwen3-14B-AWQ</text>
+            <text class="dg-small" x="169" y="210" text-anchor="middle" fill="#2F7BF6">4-bit weights · awq_marlin kernels</text>
+            <text class="dg-small" x="169" y="226" text-anchor="middle" fill="#6B7180">14B params inside 24 GB</text>
+
+            <rect x="324" y="168" width="270" height="72" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="459" y="192" text-anchor="middle" fill="#5B3FD6">fp8 KV cache</text>
+            <text class="dg-small" x="459" y="210" text-anchor="middle" fill="#7C5CFC">half the bytes per cached token</text>
+            <text class="dg-small" x="459" y="226" text-anchor="middle" fill="#6B7180">longer context, more requests</text>
+
+            <rect x="34" y="256" width="270" height="72" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="169" y="280" text-anchor="middle" fill="#0C6B42">Prefix caching</text>
+            <text class="dg-small" x="169" y="298" text-anchor="middle" fill="#16A365">shared system prompt reused</text>
+            <text class="dg-small" x="169" y="314" text-anchor="middle" fill="#6B7180">not recomputed on every call</text>
+
+            <rect x="324" y="256" width="270" height="72" rx="12" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="459" y="280" text-anchor="middle" fill="#9A5A17">Continuous batching</text>
+            <text class="dg-small" x="459" y="298" text-anchor="middle" fill="#D9772B">6 category calls in flight at once</text>
+            <text class="dg-small" x="459" y="314" text-anchor="middle" fill="#6B7180">max-num-seqs 16 · 65,536 tokens</text>
+
+            <rect x="34" y="344" width="560" height="48" rx="11" fill="#1D2436" stroke="#29314A"/>
+            <text class="dg-mono" x="314" y="364" text-anchor="middle" fill="#A9B4CC">--max-model-len 12000     --gpu-memory-utilization 0.93</text>
+            <text class="dg-mono" x="314" y="380" text-anchor="middle" fill="#A9B4CC">--quantization awq_marlin     --kv-cache-dtype fp8</text>
+
+            <path d="M314 410v20" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+            <text class="dg-edge" x="326" y="424">runs on</text>
+
+            <rect x="14" y="430" width="600" height="56" rx="14" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="314" y="454" text-anchor="middle" fill="#1A4C9E">NVIDIA RTX 3090 Ti · 24 GB VRAM · one card</text>
+            <text class="dg-small" x="314" y="472" text-anchor="middle" fill="#2F7BF6">--gpus all · --ipc=host · everything shares this GPU</text>
+
+            <rect x="634" y="110" width="232" height="90" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="750" y="136" text-anchor="middle" fill="#0C6B42">BAAI/bge-M3</text>
+            <text class="dg-small" x="750" y="156" text-anchor="middle" fill="#16A365">embeds the Urdu sub-queries</text>
+            <text class="dg-small" x="750" y="172" text-anchor="middle" fill="#16A365">and every corpus chunk</text>
+            <text class="dg-small" x="750" y="190" text-anchor="middle" fill="#6B7180">served locally</text>
+            <path d="M750 200v14" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+
+            <rect x="634" y="214" width="232" height="90" rx="14" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="750" y="240" text-anchor="middle" fill="#A63A3A">Reranker</text>
+            <text class="dg-small" x="750" y="260" text-anchor="middle" fill="#E05252">cross-encoder re-scoring</text>
+            <text class="dg-small" x="750" y="276" text-anchor="middle" fill="#E05252">candidates → top-K anchors</text>
+            <text class="dg-small" x="750" y="294" text-anchor="middle" fill="#6B7180">same machine</text>
+            <path d="M750 304v14" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+
+            <rect x="634" y="318" width="232" height="90" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="750" y="344" text-anchor="middle" fill="#5B3FD6">Qdrant</text>
+            <text class="dg-small" x="750" y="364" text-anchor="middle" fill="#7C5CFC">vector DB · payload filters</text>
+            <text class="dg-small" x="750" y="380" text-anchor="middle" fill="#7C5CFC">per book and per category</text>
+            <text class="dg-small" x="750" y="398" text-anchor="middle" fill="#6B7180">local service</text>
+
+            <rect x="634" y="430" width="232" height="56" rx="14" fill="#FFFFFF" stroke="#E8E9EF"/>
+            <text class="dg-small" x="750" y="452" text-anchor="middle" fill="#3F4653">No external API calls —</text>
+            <text class="dg-small" x="750" y="468" text-anchor="middle" fill="#3F4653">inference never leaves the box</text>
+
+            <path d="M314 486v20" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#d4a)"/>
+            <rect x="14" y="506" width="852" height="46" rx="12" fill="#FAFAFC" stroke="#E8E9EF"/>
+            <text class="dg-small" x="440" y="526" text-anchor="middle" fill="#3F4653">-v /mnt/f/huggingface:/root/.cache/huggingface — weights persist across container restarts</text>
+            <text class="dg-small" x="440" y="542" text-anchor="middle" fill="#6B7180">--restart unless-stopped — the endpoint comes back with the machine</text>
+          </svg>
+        </div>
+        <figcaption>One GPU carries the whole system. The four boxes inside the container are the only reason a 14B model can serve six concurrent category calls on a single consumer card.</figcaption>
+      </figure>
+
+      <h3>The deployment command</h3>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> serve.sh</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code>docker run --gpus all \
+  --ipc=host \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -v /mnt/f/huggingface:/root/.cache/huggingface \
+  vllm/vllm-openai:latest \
+  --model Qwen/Qwen3-14B-AWQ \
+  --quantization awq_marlin \
+  --kv-cache-dtype fp8 \
+  --max-model-len 12000 \
+  --gpu-memory-utilization 0.93 \
+  --enable-prefix-caching \
+  --max-num-seqs 16 \
+  --max-num-batched-tokens 65536 \
+  --served-model-name Islamic-rag-model</code></pre>
+      </div>
+
+      <h3>What each flag is buying</h3>
+      <div class="trace">
+        <div class="trace-row"><div class="step">Weights<span>AWQ 4-bit</span></div><div class="what"><code>--quantization awq_marlin</code> — the model is an AWQ 4-bit checkpoint, so the weights occupy roughly a quarter of what fp16 would need. That is what makes a 14B model fit on a 24 GB card with room left over. <code>awq_marlin</code> selects the Marlin kernels for AWQ, which are considerably faster than the reference AWQ path on Ampere-class hardware.</div></div>
+        <div class="trace-row"><div class="step">KV cache<span>fp8</span></div><div class="what"><code>--kv-cache-dtype fp8</code> — the attention cache is stored at 8-bit instead of 16-bit. The cache, not the weights, is what grows with context length and concurrency, so halving its footprint is what lets six long-context requests coexist.</div></div>
+        <div class="trace-row"><div class="step">Context<span>12k tokens</span></div><div class="what"><code>--max-model-len 12000</code> — sized for the real payload: a system prompt, a handful of conversation turns and an expanded chunk window. Capping it deliberately keeps the per-sequence cache budget predictable instead of letting one request starve the others.</div></div>
+        <div class="trace-row"><div class="step">VRAM<span>93%</span></div><div class="what"><code>--gpu-memory-utilization 0.93</code> — vLLM pre-allocates this fraction of the card for weights plus KV cache. Pushing it to 0.93 hands almost the whole GPU to the server; the remaining headroom covers the display and other processes on the box.</div></div>
+        <div class="trace-row"><div class="step">Prefix cache<span>reuse</span></div><div class="what"><code>--enable-prefix-caching</code> — the six category agents and the six judges share long, identical instruction prefixes. With prefix caching, that shared prefix is prefilled once and reused, instead of being recomputed on every one of the dozen-plus calls a single question triggers.</div></div>
+        <div class="trace-row"><div class="step">Batching<span>throughput</span></div><div class="what"><code>--max-num-seqs 16</code> and <code>--max-num-batched-tokens 65536</code> — the scheduler keeps up to 16 sequences in flight and can pack 65,536 tokens into a batched step. That is what turns six parallel category calls from six sequential generations into one continuous batch.</div></div>
+        <div class="trace-row"><div class="step">Cache mount<span>persistence</span></div><div class="what"><code>-v /mnt/f/huggingface:/root/.cache/huggingface</code> — model weights live on the host, so recreating the container does not re-download tens of gigabytes.</div></div>
+        <div class="trace-row"><div class="step">Lifecycle<span>always-on</span></div><div class="what"><code>--restart unless-stopped</code> keeps the endpoint up across reboots and crashes; <code>--ipc=host</code> gives the container the shared memory that the worker processes need; <code>-p 8000:8000</code> is the OpenAI-compatible port LangChain points at.</div></div>
+      </div>
+
+      <div class="callout c-orange">
+        <b>The trade being made</b>
+        4-bit weights and an 8-bit KV cache are lossy. The reason it is an acceptable trade here is that the model is not being asked to recall facts from its parameters — it is being asked to read retrieved passages and write from them. Grounding does the work that precision would otherwise have to.
+      </div>
+    </section>
+
+    <!-- ================= OUTCOMES ================= -->
+    <section id="outcomes">
+      <div class="sec-num">07 · Outcomes</div>
+      <h2>What the architecture buys</h2>
+
+      <div class="outcomes">
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--blue-bg); color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg></span>Answers you can check</h4>
+          <p>Every answer names the book and the category it came from, and the metadata separation in Qdrant is what makes that citation trustworthy rather than decorative.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--green-bg); color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>Honest about weak evidence</h4>
+          <p>The judge loop gives a lane three chances to find better material, and a way to say it did not. Low-confidence categories reach the reader hedged, not disguised.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--purple-bg); color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M2 12h20"/></svg></span>Specialists, not one generalist</h4>
+          <p>Six agents with six prompts and six filtered corpora keep each literature's conventions intact, and keep one category's material from leaking into another's answer.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--orange-bg); color:#D9772B"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M14 7h7M3 17h7"/></svg></span>Entirely self-hosted</h4>
+          <p>Model, embeddings, reranker and vector store all run on one machine with one consumer GPU. No per-token cost, no data leaving the box, no dependency on an external provider.</p>
+        </div>
+      </div>
+
+      <h3>What I would revisit next</h3>
+      <ul class="bullets">
+        <li>A hybrid retrieval pass — sparse lexical matching alongside the dense vectors — for questions that hinge on a specific term the embedding smooths over</li>
+        <li>Adaptive <code class="inline">W</code>: expanding further around an anchor when the judge's complaint is specifically about truncated context, rather than using a fixed window everywhere</li>
+        <li>Persisting the graph state to a checkpointer so conversations survive a restart, instead of holding the window in process memory</li>
+        <li>Turning the RAG evaluation pass into a scheduled run, so a change to chunking, prompts or the reranker is caught by a regression rather than by a user</li>
+      </ul>
+    </section>
+
+  </article>
+</div>
+
+<footer class="doc-foot">
+  <div class="wrap foot-card">
+    <div>
+      <h3>Want the deeper version?</h3>
+      <p>Happy to walk through the judge loop, the chunking and expansion strategy, or the single-GPU serving setup in detail.</p>
+    </div>
+    <div class="foot-actions">
+      <a class="btn btn-dark" href="../index.html#contact">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Get In Touch
+      </a>
+      <a class="btn btn-light" href="../index.html#works">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        All Projects
+      </a>
+    </div>
+  </div>
+</footer>
+<div class="copyright">Arqam Ahmed Ansari — AI Engineer · Karachi, Pakistan</div>
+
+<a class="to-top" href="#" id="toTop" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</a>
+
+<script src="../assets/js/case.js"></script>
+
+</body>
+</html>

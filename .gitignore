@@ -1,0 +1,12 @@
+# Original high-resolution artwork and working notes.
+# Kept locally; the site itself uses the compressed copies in assets/img/.
+source/
+
+# OS and editor noise
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp

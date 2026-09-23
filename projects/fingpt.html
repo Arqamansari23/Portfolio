@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fin GPT — Financial Research RAG | Arqam Ahmed Ansari</title>
+<meta name="description" content="A retrieval system over two decades of annual reports: multimodal ingestion with Marker and a vision-language model, structure-preserving chunking, HyDE query transformation, BM25 + vector retrieval fused with RRF, cross-encoder reranking, and two tiers of memory.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/case.css">
+<style>
+  /* page-specific: a couple of long stat values need a smaller display size */
+  .stat-box b.sm{ font-size:18px; }
+  .k-orange{ background:var(--orange-bg); color:#D9772B; border-color:var(--orange-line); }
+</style>
+</head>
+<body>
+
+<div class="progress" id="progress"></div>
+
+<nav class="doc-nav">
+  <div class="wrap">
+    <a class="back-link" href="../index.html#works">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+      Back to Portfolio
+    </a>
+    <div class="nav-actions">
+      <span class="nav-tag">Case Study</span>
+      <button class="toc-toggle" type="button" id="tocToggle">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h12"/></svg>
+        Contents
+      </button>
+    </div>
+  </div>
+</nav>
+
+<header class="doc-hero">
+  <div class="wrap">
+    <div class="kicker-row">
+      <span class="kicker k-purple">RAG Systems</span>
+      <span class="kicker k-green">Multimodal</span>
+      <span class="kicker k-blue">HyDE · Hybrid Retrieval</span>
+    </div>
+    <h1>Fin GPT: Financial Research RAG Over Two Decades of Annual Reports</h1>
+    <p class="standfirst">A research assistant built over a client's annual-report archive — twenty-plus years of filings where the answers live in charts, dense tables and diagrams rather than clean prose. The system reads all of it: text, tables, charts and images are ingested into one index, queries are rewritten before they are embedded, retrieval runs lexically and semantically at the same time, and the conversation remembers what came before.</p>
+
+    <div class="hero-meta">
+      <div><span>My Role</span><b>AI Engineer — end-to-end</b></div>
+      <div><span>Core Stack</span><b>Marker · Opendataloader · Chunkie · BM25 + Vectors · RRF · Rerankers · Mem0 · PostgreSQL</b></div>
+      <div><span>Deployment</span><b>Dockerized, private deployment for an enterprise finance team</b></div>
+    </div>
+
+    <div class="stat-strip">
+      <div class="stat-box"><b>20+</b><span>Years of filings indexed</span></div>
+      <div class="stat-box"><b>4</b><span>Modalities — text · tables · charts · images</span></div>
+      <div class="stat-box"><b class="sm">BM25 + Vector</b><span>Hybrid retrieval fused with RRF</span></div>
+      <div class="stat-box"><b>2 Tiers</b><span>Short-term + Mem0 long-term memory</span></div>
+    </div>
+  </div>
+</header>
+
+<div class="doc-body">
+
+  <aside class="toc" id="toc">
+    <h5>On this page</h5>
+    <a href="#problem" class="active">The problem</a>
+    <a href="#ingestion">1 · Multimodal ingestion</a>
+    <a href="#hyde">2 · HyDE query transform</a>
+    <a href="#retrieval">3 · Hybrid retrieval &amp; RRF</a>
+    <a href="#memory">4 · Memory</a>
+    <a href="#answers">5 · Answers &amp; citations</a>
+  </aside>
+
+  <article>
+
+    <!-- ================= PROBLEM ================= -->
+    <section id="problem">
+      <div class="sec-num">The Problem</div>
+      <h2>The answer is in the chart, not the paragraph</h2>
+      <p class="lead">An analyst asks a simple-sounding question: how has the dividend payout ratio moved over the last fifteen years, and what did management say about it each time? Answering that means opening twenty-odd PDFs, finding the right note in each one, reading a table, and cross-checking a bar chart in the business review. It is an afternoon's work, repeated every time the question changes slightly.</p>
+      <p>Building a retrieval system over that archive sounds like a solved problem until you look at the source documents. An annual report is not an article. Its most valuable content is deliberately <strong>not</strong> prose: five-year summary tables, segment breakdowns, waterfall charts, ratio grids, org diagrams, footnote-heavy notes to the accounts. A conventional text-only pipeline — extract text, split every 1,000 characters, embed, retrieve — throws away or mangles exactly the parts an analyst came for.</p>
+
+      <div class="callout c-orange">
+        <b>Three failure modes of text-only RAG on filings</b>
+        Tables collapse into a soup of unlabelled numbers when flattened to plain text. Charts vanish entirely, because they are images. And a naive character splitter happily cuts a five-year summary in half, so the retrieved chunk has the 2019 column and not its header row.
+      </div>
+
+      <h3>Where the answers actually live</h3>
+      <p>Before writing any code I catalogued what a question tends to depend on. Four content types matter, and each needs different handling on the way into the index:</p>
+
+      <div class="tool-grid">
+        <div class="tool t-knowledge"><b>Narrative text</b><p>Chairman's statement, business review, risk section, management commentary. The only part conventional RAG handles well — and the part analysts trust least on its own.</p></div>
+        <div class="tool t-knowledge"><b>Tables</b><p>Financial statements, notes, segment and five-year summaries. Meaningful only if the header row, units and currency stay attached to the values.</p></div>
+        <div class="tool t-action"><b>Charts &amp; graphs</b><p>Revenue bridges, margin trends, volume mixes. Invisible to a text extractor, and frequently the only place a particular series is published.</p></div>
+        <div class="tool t-action"><b>Diagrams &amp; images</b><p>Group structures, operating-model diagrams, plant maps. Context that explains why the numbers move the way they do.</p></div>
+      </div>
+
+      <h3>What the system had to do</h3>
+      <ul class="checks">
+        <li><strong>Index every modality</strong> — a chart the analyst can see should be a chart the retriever can find</li>
+        <li><strong>Never break a table</strong> — a retrieved table fragment without its headers is worse than no result</li>
+        <li><strong>Bridge the vocabulary gap</strong> — analysts ask short questions; filings answer in long, formal, standardised language</li>
+        <li><strong>Find exact figures and fuzzy concepts</strong> — "note 14" and "how did management justify it" need different retrieval behaviour</li>
+        <li><strong>Know which year it is talking about</strong> — with twenty years of near-identical documents, metadata is not optional</li>
+        <li><strong>Hold a conversation</strong> — "and the year after?" has to work, both within a session and across them</li>
+      </ul>
+
+      <div class="callout c-blue">
+        <b>Design principle</b>
+        Every number in an answer must be traceable back to a specific chunk, from a specific year, on a specific page. A financial research tool that cannot show its working is not usable by the people who need it.
+      </div>
+    </section>
+
+    <!-- ================= INGESTION ================= -->
+    <section id="ingestion">
+      <div class="sec-num">01 · Ingestion</div>
+      <h2>Multimodal ingestion: reading the whole document</h2>
+      <p>The ingestion pipeline treats a PDF as a mixed-media object rather than a bag of text. Each report goes through conversion, is split into a text stream and an image stream, and the two streams are processed differently before being reunited in a single index.</p>
+
+      <h3>Conversion: Marker and Opendataloader</h3>
+      <p><strong>Marker</strong> and <strong>Opendataloader</strong> do the heavy lifting of turning a filing into structured Markdown. Between them they recover reading order across multi-column layouts, keep heading hierarchy intact, and — critically — emit tables as Markdown tables rather than as a run of loose numbers. The same pass separates out embedded figures, so every chart, graph and diagram comes out as its own image with a page reference.</p>
+
+      <h3>Figures: a vision-language model writes the caption</h3>
+      <p>An image is useless to a text retriever, so each extracted figure is sent to a <strong>vision-language model</strong>, which writes a description of what the figure shows: the chart type, the axes and units, the series plotted, the direction of travel, and any values printed on the figure itself. That description is indexed as a chunk in its own right, carrying a pointer back to the original image and page.</p>
+
+      <div class="callout c-green">
+        <b>Why this matters more than it sounds</b>
+        Once a chart has a written description, a question like "which segment's margin fell fastest after 2015?" can match a bar chart, not just the paragraph next to it. The index stops being a text index and becomes a description of the whole document.
+      </div>
+
+      <h3>Structure-preserving chunking</h3>
+      <p>Chunking is where most RAG pipelines quietly lose their accuracy. Two chunkers run side by side:</p>
+      <ul class="bullets">
+        <li><strong>Hierarchical chunking</strong> for narrative content — the document's own heading tree defines the boundaries, so a chunk is a section or subsection rather than an arbitrary character window, and each chunk carries its ancestry as context.</li>
+        <li><strong>Table-aware chunking</strong> via the <strong>Chunkie</strong> library for anything tabular — a table is either kept whole or split on row boundaries with its header row replicated into every part. A table is never cut in half.</li>
+      </ul>
+      <p>Everything is then enriched with metadata before indexing: reporting year, report type, section path, page number and modality. That metadata is what makes "compare 2011 with 2019" answerable rather than a lucky guess.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 580" role="img" aria-label="Multimodal ingestion pipeline: annual report PDFs are converted by Marker and Opendataloader, split into a text stream converted to markdown text and tables and an image stream described by a vision-language model, then chunked by a hierarchical chunker and a table-aware Chunkie chunker, enriched with metadata, and written into a BM25 lexical index and a dense vector store">
+            <defs>
+              <marker id="fg1" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="320" y="12" width="240" height="32" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="32" text-anchor="middle">20+ years of annual reports · PDF</text>
+
+            <path d="M440 44v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg1)"/>
+
+            <rect x="280" y="62" width="320" height="52" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="84" text-anchor="middle">Document conversion layer</text>
+            <text class="dg-label" x="440" y="102" text-anchor="middle" opacity="0.7">Marker · Opendataloader</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg1)">
+              <path d="M440 114v20H240v20"/>
+              <path d="M440 114v20h200v20"/>
+            </g>
+            <rect x="288" y="126" width="76" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="326" y="138" text-anchor="middle">text stream</text>
+            <rect x="516" y="126" width="86" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="559" y="138" text-anchor="middle">image stream</text>
+
+            <rect x="60" y="154" width="360" height="90" rx="14" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="240" y="176" text-anchor="middle" fill="#1A4C9E">Text &amp; table extraction</text>
+            <rect x="74" y="186" width="160" height="26" rx="7" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="154" y="203" text-anchor="middle" fill="#1F2937">markdown text</text>
+            <rect x="246" y="186" width="160" height="26" rx="7" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="326" y="203" text-anchor="middle" fill="#1F2937">markdown tables</text>
+            <text class="dg-small" x="240" y="232" text-anchor="middle" fill="#2F7BF6">reading order, headings and header rows preserved</text>
+
+            <rect x="460" y="154" width="360" height="90" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="640" y="176" text-anchor="middle" fill="#5B3FD6">Vision-language description</text>
+            <rect x="474" y="186" width="160" height="26" rx="7" fill="#fff" stroke="#E1D9FF"/>
+            <text class="dg-mono" x="554" y="203" text-anchor="middle" fill="#1F2937">charts · graphs</text>
+            <rect x="646" y="186" width="160" height="26" rx="7" fill="#fff" stroke="#E1D9FF"/>
+            <text class="dg-mono" x="726" y="203" text-anchor="middle" fill="#1F2937">diagrams · images</text>
+            <text class="dg-small" x="640" y="232" text-anchor="middle" fill="#7C5CFC">a VLM writes axes, series and direction as prose</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M240 244v26h200"/>
+              <path d="M640 244v26H440"/>
+              <path d="M440 270v20" marker-end="url(#fg1)"/>
+            </g>
+
+            <rect x="140" y="290" width="600" height="110" rx="14" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="440" y="312" text-anchor="middle" fill="#9A5A17">Structure-preserving chunking</text>
+
+            <rect x="156" y="324" width="280" height="62" rx="11" fill="#fff" stroke="#FFE0C2"/>
+            <text class="dg-title" x="296" y="344" text-anchor="middle" fill="#9A5A17">Hierarchical chunker</text>
+            <text class="dg-small" x="296" y="361" text-anchor="middle">section → subsection → paragraph</text>
+            <text class="dg-small" x="296" y="377" text-anchor="middle">each chunk keeps its heading path</text>
+
+            <rect x="444" y="324" width="280" height="62" rx="11" fill="#fff" stroke="#FFE0C2"/>
+            <text class="dg-title" x="584" y="344" text-anchor="middle" fill="#9A5A17">Table-aware chunker · Chunkie</text>
+            <text class="dg-small" x="584" y="361" text-anchor="middle">splits only on row boundaries</text>
+            <text class="dg-small" x="584" y="377" text-anchor="middle">header row copied into every part</text>
+
+            <path d="M440 400v22" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg1)"/>
+
+            <rect x="240" y="424" width="400" height="44" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="444" text-anchor="middle">Metadata enrichment</text>
+            <text class="dg-label" x="440" y="460" text-anchor="middle" opacity="0.7">year · report · section path · page · modality</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg1)">
+              <path d="M440 468v18H240v18"/>
+              <path d="M440 468v18h200v18"/>
+            </g>
+
+            <rect x="100" y="504" width="280" height="54" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="240" y="526" text-anchor="middle" fill="#0C6B42">BM25 lexical index</text>
+            <text class="dg-small" x="240" y="544" text-anchor="middle" fill="#16A365">tokens · line-item names · exact figures</text>
+
+            <rect x="500" y="504" width="280" height="54" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="640" y="526" text-anchor="middle" fill="#0C6B42">Dense vector store</text>
+            <text class="dg-small" x="640" y="544" text-anchor="middle" fill="#16A365">one embedding per chunk, any modality</text>
+          </svg>
+        </div>
+        <figcaption>Two streams out of one PDF. Text and tables keep their structure through conversion and chunking; figures acquire a written description. Both land in the same metadata-tagged index, so a chart and a paragraph compete on equal terms at retrieval time.</figcaption>
+      </figure>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> ingest.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Multimodal ingestion: one report in, many chunks out ─────────────
+from marker.converters.pdf import PdfConverter
+from marker.models import create_model_dict
+from chunkie import TableChunker, RecursiveChunker
+
+converter = PdfConverter(artifact_dict=create_model_dict())
+
+def ingest_report(pdf_path, year, report_type):
+    # 1. PDF -> markdown text (+ tables) and a set of extracted figures
+    rendered = converter(pdf_path)
+    markdown, _, images = text_from_rendered(rendered)
+
+    chunks = []
+
+    # 2. Narrative + tables: hierarchical, table-aware chunking
+    for block in split_by_heading_tree(markdown):
+        chunker = TableChunker() if block.is_table else RecursiveChunker(
+            chunk_size=900, chunk_overlap=120
+        )
+        for piece in chunker.chunk(block.content):
+            chunks.append({
+                'text':     piece.text,
+                'modality': 'table' if block.is_table else 'text',
+                'section':  block.heading_path,    # 'Notes > 14 Dividends'
+                'page':     block.page,
+            })
+
+    # 3. Figures: a VLM writes the description that gets indexed
+    for figure in images:
+        description = vlm.describe(
+            image=figure.data,
+            prompt=(
+                'Describe this figure from an annual report. State the '
+                'chart type, axes and units, every series plotted, the '
+                'direction of each series, and any printed values. '
+                'Do not speculate beyond what is shown.'
+            ),
+        )
+        chunks.append({
+            'text':      description,
+            'modality':  'chart' if figure.is_chart else 'image',
+            'section':   figure.heading_path,
+            'page':      figure.page,
+            'image_ref': figure.uri,        # answer can link the original
+        })
+
+    # 4. Stamp the metadata that makes year-on-year questions possible
+    for c in chunks:
+        c['year'] = year
+        c['report_type'] = report_type
+        c['chunk_id'] = make_chunk_id(year, c['section'], c['page'])
+
+    bm25_index.add(chunks)          # lexical
+    vector_store.add(chunks)        # dense, embedded per chunk
+    return len(chunks)</code></pre>
+      </div>
+    </section>
+
+    <!-- ================= HYDE ================= -->
+    <section id="hyde">
+      <div class="sec-num">02 · Query Transformation</div>
+      <h2>HyDE: embedding an answer instead of a question</h2>
+      <p class="lead">There is a vocabulary gap at the heart of financial RAG. An analyst types eight words in plain English. The document answers in three hundred words of standardised accounting language. Embedding the eight words and hoping they land near the three hundred is optimistic.</p>
+      <p>The architecture uses <strong>HyDE — Hypothetical Document Embeddings</strong> — to close that gap. Before anything is retrieved, a small, fast model is asked to <em>write the answer it imagines exists</em>. That hypothetical document is almost certainly wrong on the facts, and that does not matter: it is never shown to anyone. It is used purely as the embedding input, because a passage written in the register of an annual report sits much closer, in vector space, to the real passage than the original question does.</p>
+
+      <div class="callout c-blue">
+        <b>The trick, in one line</b>
+        Retrieval is a similarity problem between two <em>documents</em>. So turn the question into a document first, then compare like with like.
+      </div>
+
+      <h3>Why it works on filings specifically</h3>
+      <p>Annual reports are unusually formulaic. "Dividend", "payout ratio", "profit after tax", "the Board declared a final dividend of" — these phrases recur, near-verbatim, across two decades of filings. A hypothetical answer generated by an LLM reproduces that register almost by reflex, which means it carries far more anchor terms into the embedding than the question ever could.</p>
+      <p>The original question is not discarded. It keeps its own job: it drives the <strong>lexical</strong> branch of retrieval, where exact tokens — a year, a note number, a line-item name — matter more than semantics. The hypothetical document drives the <strong>dense</strong> branch. Each branch gets the input it is good at.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 424" role="img" aria-label="HyDE query transformation: a short user question is expanded by a small fast LLM into a hypothetical annual-report answer; the original question feeds BM25 while the hypothetical document is embedded for dense search, and a side-by-side comparison shows the hypothetical carries far more overlapping report vocabulary">
+            <defs>
+              <marker id="fg2" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="30" y="16" width="250" height="58" rx="12" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="155" y="38" text-anchor="middle" fill="#1A4C9E">User question</text>
+            <text class="dg-quote" x="155" y="58" text-anchor="middle">“What was the dividend payout in 2011?”</text>
+
+            <path d="M280 45h46" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg2)"/>
+
+            <rect x="330" y="16" width="220" height="58" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="40" text-anchor="middle">Small, fast LLM</text>
+            <text class="dg-label" x="440" y="58" text-anchor="middle" opacity="0.7">writes a hypothetical answer</text>
+
+            <path d="M550 45h44" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg2)"/>
+
+            <rect x="600" y="4" width="252" height="82" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="726" y="24" text-anchor="middle" fill="#5B3FD6">Hypothetical document</text>
+            <text class="dg-quote" x="726" y="42" text-anchor="middle">“In the year under review the Board</text>
+            <text class="dg-quote" x="726" y="56" text-anchor="middle">declared a final dividend per ordinary</text>
+            <text class="dg-quote" x="726" y="70" text-anchor="middle">share; the payout ratio against…”</text>
+
+            <path d="M155 74v26" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg2)"/>
+            <path d="M726 86v14" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg2)"/>
+
+            <rect x="30" y="104" width="250" height="52" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="155" y="126" text-anchor="middle" fill="#0C6B42">Original question → BM25</text>
+            <text class="dg-small" x="155" y="143" text-anchor="middle" fill="#16A365">exact tokens · years · note numbers</text>
+
+            <rect x="600" y="104" width="252" height="52" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="726" y="126" text-anchor="middle" fill="#5B3FD6">Hypothetical → embedding</text>
+            <text class="dg-small" x="726" y="143" text-anchor="middle" fill="#7C5CFC">dense semantic search</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M155 156v22h285"/>
+              <path d="M726 156v22H440"/>
+              <path d="M440 178v18" marker-end="url(#fg2)"/>
+            </g>
+
+            <rect x="290" y="196" width="300" height="44" rx="11" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="216" text-anchor="middle">Hybrid retrieval over the index</text>
+            <text class="dg-label" x="440" y="232" text-anchor="middle" opacity="0.75">two inputs, two engines, one fused list</text>
+
+            <rect x="30" y="266" width="400" height="140" rx="14" fill="#FDEEEE" stroke="#F8D7D7"/>
+            <text class="dg-title" x="230" y="288" text-anchor="middle" fill="#A63A3A">Short question — 7 words</text>
+            <text class="dg-quote" x="230" y="308" text-anchor="middle">“What was the dividend payout</text>
+            <text class="dg-quote" x="230" y="322" text-anchor="middle">in 2011?”</text>
+            <text class="dg-small" x="230" y="344" text-anchor="middle" fill="#A63A3A">terms shared with the filing</text>
+            <rect x="131" y="354" width="94" height="22" rx="7" fill="#fff" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="178" y="369" text-anchor="middle" fill="#1F2937">dividend</text>
+            <rect x="235" y="354" width="94" height="22" rx="7" fill="#fff" stroke="#F8D7D7"/>
+            <text class="dg-mono" x="282" y="369" text-anchor="middle" fill="#1F2937">2011</text>
+            <text class="dg-small" x="230" y="394" text-anchor="middle">two anchors · a thin signal to embed</text>
+
+            <rect x="450" y="266" width="400" height="140" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="650" y="288" text-anchor="middle" fill="#0C6B42">Hypothetical document — ~90 words</text>
+            <text class="dg-quote" x="650" y="308" text-anchor="middle">“…the Board declared a final dividend per ordinary</text>
+            <text class="dg-quote" x="650" y="322" text-anchor="middle">share; the payout ratio against post-tax profit…”</text>
+            <text class="dg-small" x="650" y="344" text-anchor="middle" fill="#0C6B42">terms shared with the filing</text>
+            <rect x="456" y="354" width="94" height="22" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="503" y="369" text-anchor="middle" fill="#1F2937">final dividend</text>
+            <rect x="554" y="354" width="94" height="22" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="601" y="369" text-anchor="middle" fill="#1F2937">payout ratio</text>
+            <rect x="652" y="354" width="94" height="22" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="699" y="369" text-anchor="middle" fill="#1F2937">ordinary share</text>
+            <rect x="750" y="354" width="94" height="22" rx="7" fill="#fff" stroke="#CFF3E1"/>
+            <text class="dg-mono" x="797" y="369" text-anchor="middle" fill="#1F2937">post-tax profit</text>
+            <text class="dg-small" x="650" y="394" text-anchor="middle">many anchors · the register of the source</text>
+          </svg>
+        </div>
+        <figcaption>The hypothetical answer is never shown to the user — it exists only to be embedded. Written in the language of a filing, it overlaps the real passage far more than the original question does, while the question itself still drives the lexical branch.</figcaption>
+      </figure>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> hyde.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── HyDE: write the answer you wish existed, then embed that ─────────
+from langchain_core.prompts import ChatPromptTemplate
+
+HYDE_PROMPT = ChatPromptTemplate.from_template(
+    '''You are writing a short passage exactly as it would appear in a
+    company's annual report. Answer the question below in 80-120 words,
+    in the formal register of a filing: use standard accounting terms,
+    name the relevant statement or note, and write in full sentences.
+
+    Invented figures are acceptable — this passage is used only as a
+    retrieval probe and is never shown to a user. Do not hedge, do not
+    say you lack information, and do not mention that this is
+    hypothetical.
+
+    Question: {question}
+    Passage:'''
+)
+
+# A small, fast model: this runs on every query, so latency matters
+hyde_llm = ChatOpenAI(model='gpt-4o-mini', temperature=0.0)
+hyde_chain = HYDE_PROMPT | hyde_llm | StrOutputParser()
+
+
+def transform_query(question: str, history: list) -> dict:
+    '''Resolve references, then build the retrieval probe.'''
+    # 'and the year after?' only means something with the thread attached
+    standalone = resolve_with_history(question, history)
+
+    hypothetical = hyde_chain.invoke({'question': standalone})
+
+    return {
+        'lexical_query': standalone,                   # feeds BM25
+        'dense_vector':  embedder.embed(hypothetical), # feeds vectors
+        'filters':       extract_filters(standalone),  # year, report type
+        'hypothetical':  hypothetical,                 # kept for tracing
+    }
+
+
+def extract_filters(q: str) -> dict:
+    '''Pull structured constraints out of the question so retrieval can
+    narrow 20+ years of filings before it ranks anything.'''
+    years = sorted(set(int(y) for y in YEAR_RE.findall(q)))
+    return {
+        'year': {'in': years} if years else None,
+        'report_type': 'annual' if 'annual' in q.lower() else None,
+    }</code></pre>
+      </div>
+
+      <div class="callout c-orange">
+        <b>The honest caveat</b>
+        HyDE costs an extra LLM call on every query, and a hypothetical passage can drift off-topic for questions the archive genuinely does not cover. Pinning the generator to temperature zero, keeping it short, and always running the lexical branch off the real question are what keep that drift from reaching the answer.
+      </div>
+    </section>
+
+    <!-- ================= RETRIEVAL ================= -->
+    <section id="retrieval">
+      <div class="sec-num">03 · Retrieval</div>
+      <h2>Hybrid search, reciprocal rank fusion, then a reranker</h2>
+      <p>No single retrieval method is good at everything a finance question needs. Lexical search nails exact identifiers and fails on paraphrase; vector search understands paraphrase and drifts on rare tokens. So both run, on every query, in parallel.</p>
+
+      <div class="compare">
+        <div class="row">
+          <h4>BM25 only <span class="badge-x">Insufficient</span></h4>
+          <p>Excellent for "note 14", "segment reporting", a specific line-item name or a year. Blind to "how did management justify the cut?" when the report says "the Board considered it prudent to rebase the distribution".</p>
+        </div>
+        <div class="row">
+          <h4>Dense vectors only <span class="badge-x">Insufficient</span></h4>
+          <p>Handles paraphrase and concept matching well. But across twenty near-identical filings it happily returns the right passage from the wrong year, and it under-weights rare exact tokens.</p>
+        </div>
+        <div class="row picked">
+          <h4>Both, fused with RRF, then reranked <span class="badge-ok">Chosen</span></h4>
+          <p>Each engine contributes its own ranked list; fusion rewards chunks that both agree on without ever comparing their incomparable raw scores; a cross-encoder then does the expensive, accurate ordering on the short list that survives.</p>
+        </div>
+      </div>
+
+      <h3>Metadata filtering comes first</h3>
+      <p>Before either engine ranks anything, the filters extracted during query transformation narrow the candidate pool by year, report type and section. With twenty-plus years of structurally identical documents, this is the single cheapest accuracy win in the pipeline — it removes the entire class of "right answer, wrong year" errors before ranking begins.</p>
+
+      <h3>Why Reciprocal Rank Fusion rather than score blending</h3>
+      <p>The obvious way to merge two result lists is to normalise the scores and take a weighted average. In practice that is fragile: a BM25 score and a cosine similarity live on different scales with different distributions, and the normalisation constant you tune on one query set stops working on the next.</p>
+      <p><strong>RRF ignores scores entirely and uses only rank position.</strong> Each document scores <code class="inline">1 / (k + rank)</code> in every list it appears in, and those contributions are summed. With <code class="inline">k = 60</code>, the curve is steep at the top and flat further down, so a document ranked first in one list and second in the other beats a document ranked first in one list and absent from the other — which is exactly the behaviour you want.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 706" role="img" aria-label="Hybrid retrieval pipeline: the query and hypothetical document pass a metadata filter then split into a BM25 lexical branch and a dense vector branch, each producing a ranked list; reciprocal rank fusion sums one over sixty plus rank across both lists to produce a fused ranking, which a cross-encoder reranker then reorders into the final top-k context">
+            <defs>
+              <marker id="fg3" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="320" y="12" width="240" height="32" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="32" text-anchor="middle">Query + hypothetical document</text>
+            <path d="M440 44v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg3)"/>
+
+            <rect x="280" y="62" width="320" height="40" rx="11" fill="#10141F"/>
+            <text class="dg-label" x="440" y="87" text-anchor="middle">Metadata filter · year · report · section</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg3)">
+              <path d="M440 102v18H200v18"/>
+              <path d="M440 102v18H680v18"/>
+            </g>
+            <rect x="282" y="112" width="88" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="326" y="124" text-anchor="middle">lexical branch</text>
+            <rect x="510" y="112" width="96" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="558" y="124" text-anchor="middle">semantic branch</text>
+
+            <rect x="40" y="138" width="320" height="54" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="200" y="160" text-anchor="middle" fill="#0C6B42">BM25 lexical search</text>
+            <text class="dg-small" x="200" y="178" text-anchor="middle" fill="#16A365">the original question · exact tokens</text>
+
+            <rect x="520" y="138" width="320" height="54" rx="12" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-title" x="680" y="160" text-anchor="middle" fill="#1A4C9E">Dense vector search</text>
+            <text class="dg-small" x="680" y="178" text-anchor="middle" fill="#2F7BF6">the hypothetical document, embedded</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg3)">
+              <path d="M200 192v14"/>
+              <path d="M680 192v14"/>
+            </g>
+
+            <rect x="40" y="208" width="320" height="118" rx="12" fill="#fff" stroke="#CFF3E1"/>
+            <g class="dg-edge">
+              <text x="58" y="228">RANK</text>
+              <text x="104" y="228">CHUNK</text>
+              <text x="344" y="228" text-anchor="end">1/(60+r)</text>
+            </g>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="58" y="250">1</text><text x="104" y="250">C-2011-notes-14</text><text x="344" y="250" text-anchor="end">0.0164</text>
+              <text x="58" y="270">2</text><text x="104" y="270">C-2014-mda-03</text><text x="344" y="270" text-anchor="end">0.0161</text>
+              <text x="58" y="290">3</text><text x="104" y="290">C-2011-fin-07</text><text x="344" y="290" text-anchor="end">0.0159</text>
+              <text x="58" y="310">4</text><text x="104" y="310">C-2009-notes-02</text><text x="344" y="310" text-anchor="end">0.0156</text>
+            </g>
+
+            <rect x="520" y="208" width="320" height="118" rx="12" fill="#fff" stroke="#D6E7FF"/>
+            <g class="dg-edge">
+              <text x="538" y="228">RANK</text>
+              <text x="584" y="228">CHUNK</text>
+              <text x="824" y="228" text-anchor="end">1/(60+r)</text>
+            </g>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="538" y="250">1</text><text x="584" y="250">C-2011-fin-07</text><text x="824" y="250" text-anchor="end">0.0164</text>
+              <text x="538" y="270">2</text><text x="584" y="270">C-2011-notes-14</text><text x="824" y="270" text-anchor="end">0.0161</text>
+              <text x="538" y="290">3</text><text x="584" y="290">C-2012-notes-09</text><text x="824" y="290" text-anchor="end">0.0159</text>
+              <text x="538" y="310">4</text><text x="584" y="310">C-2014-mda-03</text><text x="824" y="310" text-anchor="end">0.0156</text>
+            </g>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M200 326v20h240"/>
+              <path d="M680 326v20H440"/>
+              <path d="M440 346v18" marker-end="url(#fg3)"/>
+            </g>
+
+            <rect x="200" y="364" width="480" height="72" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="440" y="386" text-anchor="middle" fill="#5B3FD6">Reciprocal Rank Fusion</text>
+            <text class="dg-mono" x="440" y="406" text-anchor="middle" fill="#1F2937">score(d) = sum over lists of 1 / (k + rank(d)), k = 60</text>
+            <text class="dg-small" x="440" y="424" text-anchor="middle" fill="#7C5CFC">rank position is all that counts — raw scores are never compared</text>
+
+            <path d="M440 436v16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg3)"/>
+
+            <rect x="200" y="454" width="480" height="112" rx="12" fill="#fff" stroke="#E1D9FF"/>
+            <g class="dg-edge">
+              <text x="218" y="474">FUSED</text>
+              <text x="272" y="474">CHUNK</text>
+              <text x="440" y="474">CONTRIBUTIONS</text>
+              <text x="664" y="474" text-anchor="end">RRF SCORE</text>
+            </g>
+            <g class="dg-mono" fill="#1F2937">
+              <text x="218" y="496">1</text><text x="272" y="496">C-2011-notes-14</text><text x="440" y="496">BM25 #1 + Vec #2</text><text x="664" y="496" text-anchor="end">0.0325</text>
+              <text x="218" y="516">2</text><text x="272" y="516">C-2011-fin-07</text><text x="440" y="516">BM25 #3 + Vec #1</text><text x="664" y="516" text-anchor="end">0.0323</text>
+              <text x="218" y="536">3</text><text x="272" y="536">C-2014-mda-03</text><text x="440" y="536">BM25 #2 + Vec #4</text><text x="664" y="536" text-anchor="end">0.0317</text>
+            </g>
+            <text class="dg-small" x="440" y="556" text-anchor="middle">a chunk both engines found rises; a strong single-engine hit still survives</text>
+
+            <path d="M440 566v16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg3)"/>
+
+            <rect x="240" y="584" width="400" height="52" rx="12" fill="#FFF2E7" stroke="#FFE0C2"/>
+            <text class="dg-title" x="440" y="606" text-anchor="middle" fill="#9A5A17">Cross-encoder reranker</text>
+            <text class="dg-small" x="440" y="624" text-anchor="middle" fill="#D9772B">scores each (query, chunk) pair jointly — slow, so it sees only the short list</text>
+
+            <path d="M440 636v16" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg3)"/>
+
+            <rect x="290" y="654" width="300" height="36" rx="10" fill="#7C5CFC"/>
+            <text class="dg-label" x="440" y="677" text-anchor="middle">Top-k context → answer generation</text>
+          </svg>
+        </div>
+        <figcaption>A worked pass. Both engines return their own ordering; RRF sums <code>1/(60+rank)</code> across the lists, so agreement between engines is rewarded without either score scale leaking into the other. The cross-encoder then reorders the survivors.</figcaption>
+      </figure>
+
+      <h3>Reranking: the expensive model, used sparingly</h3>
+      <p>Bi-encoders embed the query and the chunk separately, which is what makes them fast enough to search millions of vectors — and also what limits their precision, because the two never see each other. A <strong>cross-encoder</strong> reads the query and the candidate chunk together in one forward pass and scores the pair directly. It is far more accurate and far too slow to run over a whole index, so it runs over roughly the top fifty fused candidates and returns the handful that actually go into the prompt.</p>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> retrieval.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Hybrid retrieval: two engines, one fused list, then a reranker ───
+from concurrent.futures import ThreadPoolExecutor
+from sentence_transformers import CrossEncoder
+
+RRF_K = 60          # flattens the curve so rank 1 does not dominate
+CANDIDATES = 50     # how many survive fusion and reach the reranker
+TOP_K = 6           # how many reach the prompt
+
+reranker = CrossEncoder('BAAI/bge-reranker-v2-m3')
+
+
+def reciprocal_rank_fusion(ranked_lists, k=RRF_K):
+    '''Fuse any number of ranked lists using rank position only.
+
+    Raw BM25 scores and cosine similarities are not comparable, so RRF
+    never looks at them: a document scores 1/(k + rank) in each list it
+    appears in, and those contributions are summed.
+    '''
+    fused = {}
+    provenance = {}
+    for list_name, docs in ranked_lists.items():
+        for rank, doc in enumerate(docs, start=1):
+            fused[doc.chunk_id] = fused.get(doc.chunk_id, 0.0) + 1.0 / (k + rank)
+            provenance.setdefault(doc.chunk_id, []).append((list_name, rank))
+    ordered = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)
+    return [(cid, score, provenance[cid]) for cid, score in ordered]
+
+
+def retrieve(question: str, history: list, top_k: int = TOP_K):
+    probe = transform_query(question, history)     # HyDE happens here
+
+    # Both branches run against the same metadata-filtered pool
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        lexical = pool.submit(
+            bm25_index.search,
+            query=probe['lexical_query'],
+            filters=probe['filters'],
+            limit=CANDIDATES,
+        )
+        dense = pool.submit(
+            vector_store.search,
+            vector=probe['dense_vector'],
+            filters=probe['filters'],
+            limit=CANDIDATES,
+        )
+
+    fused = reciprocal_rank_fusion({
+        'bm25':   lexical.result(),
+        'vector': dense.result(),
+    })[:CANDIDATES]
+
+    # Cross-encoder: query and chunk read together, one pair at a time
+    chunks = store.get_many([cid for cid, _, _ in fused])
+    pairs = [(question, c.text) for c in chunks]
+    scores = reranker.predict(pairs)
+
+    ranked = sorted(zip(chunks, scores), key=lambda p: p[1], reverse=True)
+    return [chunk for chunk, _ in ranked[:top_k]]</code></pre>
+      </div>
+
+      <div class="callout c-green">
+        <b>What the fusion step actually protects you from</b>
+        A question mentioning a note number will send BM25 straight to the right note while the vector branch wanders. A question phrased entirely in the analyst's own words will do the reverse. RRF means the pipeline does not have to know in advance which kind of question it just received.
+      </div>
+    </section>
+
+    <!-- ================= MEMORY ================= -->
+    <section id="memory">
+      <div class="sec-num">04 · Memory</div>
+      <h2>Two tiers of memory, because research is a conversation</h2>
+      <p class="lead">Nobody researches a company in one question. They ask something, read the answer, and then ask "and how did that change the year after?" — a sentence that is meaningless without everything that came before it.</p>
+
+      <h3>Short-term: the session</h3>
+      <p>Short-term memory is the live message history for the current thread. It is what lets query transformation resolve "that", "the year after" and "the same segment" into a standalone question before retrieval ever runs — which matters doubly here, because a HyDE probe generated from an unresolved pronoun retrieves nothing useful.</p>
+
+      <h3>Long-term: Mem0, backed by PostgreSQL</h3>
+      <p>Long-term memory uses <strong>Mem0</strong>, which does something more selective than storing transcripts: it extracts the durable facts from a conversation, deduplicates them against what it already holds, and recalls the relevant ones on later turns. For this system that means remembering which companies and years an analyst works on, which metrics they keep coming back to, and how they like answers framed.</p>
+      <p><strong>PostgreSQL</strong> is the checkpointer store underneath both tiers — thread state and extracted memories are durable rows, not process memory. A restarted service does not lose a conversation, and a Monday morning session can pick up where Friday afternoon left off.</p>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 466" role="img" aria-label="Memory architecture: the orchestrator reads and writes short-term in-session history on one side and long-term Mem0 memories on the other; thread state and extracted memories both persist to PostgreSQL as the checkpointer store, with short-term buying coherent follow-ups and long-term buying context that survives the session">
+            <defs>
+              <marker id="fg4" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="fg4b" markerWidth="9" markerHeight="9" refX="1" refY="3.2" orient="auto"><path d="M7 0L0 3.2 7 6.4z" fill="#9599A6"/></marker>
+            </defs>
+
+            <rect x="350" y="12" width="180" height="30" rx="8" fill="#2F7BF6"/>
+            <text class="dg-label" x="440" y="31" text-anchor="middle">Follow-up question</text>
+            <text class="dg-quote" x="440" y="58" text-anchor="middle">“and how did that change the year after?”</text>
+            <path d="M440 64v18" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg4)"/>
+
+            <rect x="310" y="82" width="260" height="50" rx="12" fill="#10141F"/>
+            <text class="dg-label" x="440" y="103" text-anchor="middle">Fin GPT orchestrator</text>
+            <text class="dg-label" x="440" y="120" text-anchor="middle" opacity="0.7">resolves references · plans retrieval</text>
+
+            <path d="M306 107H258" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg4)" marker-start="url(#fg4b)"/>
+            <rect x="242" y="84" width="64" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="274" y="96" text-anchor="middle">read + write</text>
+
+            <rect x="20" y="80" width="220" height="88" rx="14" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="130" y="103" text-anchor="middle" fill="#5B3FD6">Short-term memory</text>
+            <text class="dg-small" x="130" y="121" text-anchor="middle" fill="#7C5CFC">in-session message history</text>
+            <text class="dg-small" x="130" y="137" text-anchor="middle" fill="#7C5CFC">this thread only</text>
+            <text class="dg-small" x="130" y="156" text-anchor="middle">resolves “that”, “the year after”</text>
+
+            <path d="M574 107h46" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg4)" marker-start="url(#fg4b)"/>
+            <rect x="574" y="84" width="68" height="16" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="608" y="96" text-anchor="middle">recall + store</text>
+
+            <rect x="640" y="80" width="220" height="88" rx="14" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="750" y="103" text-anchor="middle" fill="#0C6B42">Long-term memory · Mem0</text>
+            <text class="dg-small" x="750" y="121" text-anchor="middle" fill="#16A365">durable facts about the analyst</text>
+            <text class="dg-small" x="750" y="137" text-anchor="middle" fill="#16A365">companies · years · preferred metrics</text>
+            <text class="dg-small" x="750" y="156" text-anchor="middle">recalled on any later session</text>
+
+            <path d="M440 132v20" stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg4)"/>
+            <rect x="320" y="152" width="240" height="36" rx="10" fill="#7C5CFC"/>
+            <text class="dg-label" x="440" y="175" text-anchor="middle">Grounded, cited answer</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none" marker-end="url(#fg4)">
+              <path d="M130 168v36"/>
+              <path d="M750 168v36"/>
+            </g>
+
+            <rect x="20" y="208" width="220" height="44" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-title" x="130" y="230" text-anchor="middle" fill="#5B3FD6">Thread state</text>
+            <text class="dg-small" x="130" y="246" text-anchor="middle" fill="#7C5CFC">checkpointed per thread_id</text>
+
+            <rect x="640" y="208" width="220" height="44" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-title" x="750" y="230" text-anchor="middle" fill="#0C6B42">Memory extraction</text>
+            <text class="dg-small" x="750" y="246" text-anchor="middle" fill="#16A365">salient facts distilled &amp; deduped</text>
+
+            <g stroke="#9599A6" stroke-width="1.4" fill="none">
+              <path d="M130 252v34h310"/>
+              <path d="M750 252v34H440"/>
+              <path d="M440 286v18" marker-end="url(#fg4)"/>
+            </g>
+
+            <rect x="140" y="304" width="600" height="52" rx="14" fill="#10141F"/>
+            <text class="dg-label" x="440" y="328" text-anchor="middle">PostgreSQL — long-term checkpointer store</text>
+            <text class="dg-label" x="440" y="346" text-anchor="middle" opacity="0.7">threads, state and extracted memories survive a restart</text>
+
+            <rect x="100" y="390" width="300" height="56" rx="12" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-small" x="250" y="412" text-anchor="middle" fill="#5B3FD6">SHORT-TERM BUYS</text>
+            <text class="dg-small" x="250" y="430" text-anchor="middle" fill="#7C5CFC">follow-ups that resolve correctly</text>
+
+            <rect x="480" y="390" width="300" height="56" rx="12" fill="#E8FAF1" stroke="#CFF3E1"/>
+            <text class="dg-small" x="630" y="412" text-anchor="middle" fill="#0C6B42">LONG-TERM BUYS</text>
+            <text class="dg-small" x="630" y="430" text-anchor="middle" fill="#16A365">context that outlives the session</text>
+          </svg>
+        </div>
+        <figcaption>Short-term memory keeps one conversation coherent; Mem0 keeps what was learned about the analyst. Both are checkpointed into PostgreSQL, so neither is lost to a restart or to the end of a working day.</figcaption>
+      </figure>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> memory.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Two tiers: session state and durable memories, both on Postgres ──
+from mem0 import Memory
+from langgraph.checkpoint.postgres import PostgresSaver
+
+# Short-term: LangGraph thread state, persisted rather than in-process
+checkpointer = PostgresSaver.from_conn_string(settings.PG_DSN)
+checkpointer.setup()
+
+# Long-term: Mem0 extracts and recalls facts, with Postgres underneath
+memory = Memory.from_config({
+    'vector_store': {
+        'provider': 'pgvector',
+        'config': {
+            'connection_string': settings.PG_DSN,
+            'collection_name': 'fingpt_memories',
+        },
+    },
+    'llm': {'provider': 'openai', 'config': {'model': 'gpt-4o-mini'}},
+})
+
+
+def answer_turn(question: str, user_id: str, thread_id: str) -> str:
+    config = {'configurable': {'thread_id': thread_id}}
+
+    # Long-term recall: only the memories relevant to this question
+    recalled = memory.search(query=question, user_id=user_id, limit=5)
+    preamble = '\n'.join('- ' + m['memory'] for m in recalled['results'])
+
+    result = graph.invoke(
+        {
+            'messages': [HumanMessage(content=question)],
+            'user_context': preamble,      # 'covers the 2009-2019 window'
+        },
+        config=config,                     # short-term restored by thread
+    )
+
+    reply = result['messages'][-1].content
+
+    # Write back: Mem0 decides what is worth keeping, and dedupes it
+    memory.add(
+        messages=[
+            {'role': 'user', 'content': question},
+            {'role': 'assistant', 'content': reply},
+        ],
+        user_id=user_id,
+        metadata={'thread_id': thread_id, 'source': 'fingpt'},
+    )
+    return reply</code></pre>
+      </div>
+
+      <div class="callout c-blue">
+        <b>Why not just replay the whole transcript?</b>
+        Because it does not scale and it does not generalise. A transcript grows without bound and buries the useful facts in filler; an extracted memory store keeps a short, deduplicated set of statements that are actually worth carrying into the next session — and can be inspected and corrected.
+      </div>
+    </section>
+
+    <!-- ================= ANSWERS ================= -->
+    <section id="answers">
+      <div class="sec-num">05 · Answers</div>
+      <h2>Generation that shows its working</h2>
+      <p>Everything before this point exists to make the final prompt small, relevant and attributable. Generation reads only the reranked top-k chunks, and every chunk arrives with the metadata it was indexed with — year, report, section path, page and modality — so the model can cite precisely rather than gesture at "the annual report".</p>
+
+      <h3>The rules the generator works under</h3>
+      <ul class="bullets">
+        <li><strong>Answer only from the supplied context</strong> — no background knowledge about the company, no filling gaps from the model's own priors</li>
+        <li><strong>Attach a chunk id to every figure</strong>, so an assertion can be traced to a page</li>
+        <li><strong>Name the year on every number</strong>, because in a twenty-year archive an unlabelled figure is a liability</li>
+        <li><strong>Reproduce table values verbatim</strong> rather than restating them from memory</li>
+        <li><strong>Say when the archive is silent</strong> — an explicit "the filings do not disclose this" is a valid and useful answer</li>
+        <li><strong>Mark chart-derived values as chart-derived</strong>, since a VLM description of a graph is an interpretation, not a disclosed figure</li>
+      </ul>
+
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 880 400" role="img" aria-label="Answer generation: the reranked top-k chunks, each carrying year, section, page and modality metadata, are assembled into a prompt with grounding rules and passed to the generator, which produces an answer whose inline citations resolve back to the originating chunk, page and year">
+            <defs>
+              <marker id="fg5" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#9599A6"/></marker>
+              <marker id="fg5p" markerWidth="9" markerHeight="9" refX="7.6" refY="3.2" orient="auto"><path d="M0 0l7 3.2-7 3.2z" fill="#B8A6FB"/></marker>
+            </defs>
+
+            <text class="dg-edge" x="149" y="24" text-anchor="middle">TOP-K RERANKED CONTEXT</text>
+
+            <rect x="24" y="40" width="250" height="54" rx="11" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="40" y="62" fill="#1F2937">C-2011-notes-14</text>
+            <text class="dg-small" x="40" y="80" fill="#2F7BF6">FY2011 · Notes · p.118 · table</text>
+
+            <rect x="24" y="104" width="250" height="54" rx="11" fill="#fff" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="40" y="126" fill="#1F2937">C-2011-fin-07</text>
+            <text class="dg-small" x="40" y="144" fill="#2F7BF6">FY2011 · Financials · p.64 · text</text>
+
+            <rect x="24" y="168" width="250" height="54" rx="11" fill="#fff" stroke="#E1D9FF"/>
+            <text class="dg-mono" x="40" y="190" fill="#1F2937">C-2012-chart-02</text>
+            <text class="dg-small" x="40" y="208" fill="#7C5CFC">FY2012 · Review · p.22 · chart (VLM)</text>
+
+            <g stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#fg5)">
+              <path d="M274 67h52"/>
+              <path d="M274 131h52"/>
+              <path d="M274 195h52"/>
+            </g>
+
+            <rect x="330" y="40" width="230" height="182" rx="14" fill="#10141F"/>
+            <text class="dg-label" x="445" y="66" text-anchor="middle">Prompt assembly</text>
+            <text class="dg-label" x="445" y="84" text-anchor="middle" opacity="0.7">grounding rules + context</text>
+            <g class="dg-small" fill="#AEB7CC">
+              <text x="348" y="112">· answer only from the context</text>
+              <text x="348" y="132">· cite a chunk id for each figure</text>
+              <text x="348" y="152">· state the year on every number</text>
+              <text x="348" y="172">· copy table values verbatim</text>
+              <text x="348" y="192">· say so when the filing is silent</text>
+            </g>
+
+            <path d="M560 131h50" stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#fg5)"/>
+
+            <rect x="610" y="104" width="250" height="54" rx="12" fill="#7C5CFC"/>
+            <text class="dg-label" x="735" y="126" text-anchor="middle">Answer generator</text>
+            <text class="dg-label" x="735" y="144" text-anchor="middle" opacity="0.8">grounded · citation-carrying</text>
+
+            <path d="M735 158v88" stroke="#9599A6" stroke-width="1.3" fill="none" marker-end="url(#fg5)"/>
+
+            <rect x="470" y="250" width="390" height="132" rx="12" fill="#fff" stroke="#E8E9EF"/>
+            <text class="dg-small" x="486" y="272" fill="#6B7180">GENERATED ANSWER</text>
+            <text class="dg-quote" x="486" y="292">“The payout ratio moved lower between 2011 and 2012</text>
+            <text class="dg-quote" x="486" y="308">[C-2011-notes-14]; the chart on page 22 of the 2012</text>
+            <text class="dg-quote" x="486" y="324">review shows the same movement in absolute terms</text>
+            <text class="dg-quote" x="486" y="340">[C-2012-chart-02], read from the chart rather than…”</text>
+            <rect x="486" y="352" width="150" height="22" rx="7" fill="#EAF2FF" stroke="#D6E7FF"/>
+            <text class="dg-mono" x="561" y="367" text-anchor="middle" fill="#1A4C9E">C-2011-notes-14</text>
+            <rect x="646" y="352" width="150" height="22" rx="7" fill="#F2EEFF" stroke="#E1D9FF"/>
+            <text class="dg-mono" x="721" y="367" text-anchor="middle" fill="#5B3FD6">C-2012-chart-02</text>
+
+            <path d="M470 363H300V208h-26" stroke="#B8A6FB" stroke-width="1.3" fill="none" stroke-dasharray="4 3" marker-end="url(#fg5p)"/>
+            <rect x="312" y="336" width="130" height="17" rx="8" fill="#fff"/>
+            <text class="dg-edge" x="377" y="348" text-anchor="middle" fill="#7C5CFC">resolves to page + year</text>
+          </svg>
+        </div>
+        <figcaption>Metadata survives the whole pipeline, so a citation is not decorative: every bracketed id maps back to a specific chunk, page, year and modality — including a note that a value was read off a chart rather than disclosed in a table.</figcaption>
+      </figure>
+
+      <h3>A question, end to end</h3>
+      <div class="trace">
+        <div class="trace-row"><div class="step">Step 1<span>Resolve</span></div><div class="what">Short-term memory rewrites <code>"and the year after?"</code> into a standalone question using the previous turn</div></div>
+        <div class="trace-row"><div class="step">Step 2<span>Transform</span></div><div class="what">HyDE writes a ~100-word hypothetical filing passage; filters <code>year in (2012)</code> are extracted from the text</div></div>
+        <div class="trace-row"><div class="step">Step 3<span>Retrieve</span></div><div class="what">BM25 on the question and vector search on the hypothetical run in parallel over the filtered pool</div></div>
+        <div class="trace-row"><div class="step">Step 4<span>Fuse</span></div><div class="what"><code>reciprocal_rank_fusion()</code> merges both lists on rank position and keeps the top candidates</div></div>
+        <div class="trace-row"><div class="step">Step 5<span>Rerank</span></div><div class="what">The cross-encoder reads each <code>(question, chunk)</code> pair and returns the final top-k — here a table chunk and a chart description</div></div>
+        <div class="trace-row"><div class="step">Step 6<span>Generate</span></div><div class="what">The answer is composed from those chunks only, with <code>[chunk_id]</code> citations and the year stated on every figure</div></div>
+        <div class="trace-row"><div class="step">Step 7<span>Remember</span></div><div class="what">Mem0 extracts what is durable from the exchange; thread state is checkpointed to PostgreSQL</div></div>
+      </div>
+
+      <div class="code-card">
+        <div class="code-top">
+          <div class="code-file"><span class="dots"><i style="background:#FF5F57"></i><i style="background:#FEBC2E"></i><i style="background:#28C840"></i></span> generate.py</div>
+          <button class="copy-btn" type="button" data-copy>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 012-2h10"/></svg>
+            <span>Copy</span>
+          </button>
+        </div>
+<pre><code># ── Grounded generation with resolvable citations ────────────────────
+ANSWER_PROMPT = '''You are a financial research assistant working over a
+company's annual-report archive. Answer using ONLY the context below.
+
+RULES
+  1. Cite the chunk id in square brackets after every figure or claim.
+  2. State the reporting year alongside every number.
+  3. Quote table values exactly as they appear; never recompute them.
+  4. If a value comes from a chart description, say it was read from a
+     chart rather than disclosed in a table.
+  5. If the context does not answer the question, say so plainly and
+     name what would be needed. Do not fill the gap from memory.
+
+WHAT THIS ANALYST USUALLY CARES ABOUT
+{user_context}
+
+CONTEXT
+{context}
+
+QUESTION
+{question}
+'''
+
+
+def build_context(chunks) -> str:
+    '''Metadata travels with the text, so citations can resolve.'''
+    blocks = []
+    for c in chunks:
+        blocks.append(
+            '[{id}] FY{year} | {section} | p.{page} | {modality}\n{text}'.format(
+                id=c.chunk_id, year=c.year, section=c.section,
+                page=c.page, modality=c.modality, text=c.text,
+            )
+        )
+    return '\n\n'.join(blocks)
+
+
+def generate(question, chunks, user_context=''):
+    answer = answer_llm.invoke(ANSWER_PROMPT.format(
+        question=question,
+        context=build_context(chunks),
+        user_context=user_context or 'no stored preferences yet',
+    )).content
+
+    # Every [id] in the answer must map to a chunk that was actually
+    # supplied — an unresolvable citation is a generation failure.
+    cited = set(CITATION_RE.findall(answer))
+    supplied = {c.chunk_id for c in chunks}
+    unknown = cited - supplied
+    if unknown:
+        log.warning('unresolvable citations: %s', unknown)
+
+    return {
+        'answer': answer,
+        'sources': [c.as_source() for c in chunks if c.chunk_id in cited],
+    }</code></pre>
+      </div>
+
+      <h3>What the architecture buys</h3>
+      <div class="outcomes">
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--blue-bg); color:var(--blue)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></span>Tables and charts are first-class</h4>
+          <p>A figure only published as a bar chart is still findable, because it was described in words at ingestion time and indexed like any other chunk.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--green-bg); color:var(--green)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg></span>Right passage, right year</h4>
+          <p>Metadata filtering runs before ranking, so twenty structurally identical documents stop competing with each other for the same query.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--purple-bg); color:var(--purple)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span>Robust to how the question is phrased</h4>
+          <p>HyDE closes the register gap, hybrid search covers both exact and conceptual matching, and RRF means neither branch has to win outright.</p>
+        </div>
+        <div class="outcome">
+          <h4><span class="ic" style="background:var(--orange-bg); color:#D9772B"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5l3 2"/><circle cx="12" cy="12" r="9"/></svg></span>A conversation, not a search box</h4>
+          <p>Session memory resolves follow-ups; Mem0 on PostgreSQL carries what matters into next week's session rather than starting cold.</p>
+        </div>
+      </div>
+
+      <h3>What I would improve next</h3>
+      <ul class="bullets">
+        <li><strong>Table question-answering as its own path</strong> — for questions that are really arithmetic over a retrieved table, executing a query against structured rows is more reliable than asking a language model to read the grid</li>
+        <li><strong>A held-out evaluation set of analyst questions</strong>, scored on retrieval recall and citation correctness, so changes to chunking or to the reranker can be measured rather than argued about</li>
+        <li><strong>Verifying chart-derived values</strong> against any nearby table that publishes the same series, and flagging disagreement in the answer instead of silently preferring one</li>
+        <li><strong>Tuning the RRF weighting per query type</strong> — identifier-heavy questions could lean further towards the lexical list than conceptual ones do</li>
+        <li><strong>Caching HyDE probes</strong> for recurring question shapes, to take the extra generation call off the hot path</li>
+        <li><strong>Incremental re-ingestion</strong>, so a newly published filing joins the index without a full rebuild of two decades of documents</li>
+      </ul>
+    </section>
+
+  </article>
+</div>
+
+<footer class="doc-foot">
+  <div class="wrap foot-card">
+    <div>
+      <h3>Want the deeper version?</h3>
+      <p>Happy to walk through the ingestion pipeline, the fusion and reranking logic, or the memory design in detail.</p>
+    </div>
+    <div class="foot-actions">
+      <a class="btn btn-dark" href="../index.html#contact">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        Get In Touch
+      </a>
+      <a class="btn btn-light" href="../index.html#works">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        All Projects
+      </a>
+    </div>
+  </div>
+</footer>
+<div class="copyright">Arqam Ahmed Ansari — AI Engineer · Karachi, Pakistan</div>
+
+<a class="to-top" href="#" id="toTop" aria-label="Back to top">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</a>
+
+<script src="../assets/js/case.js"></script>
+
+</body>
+</html>
